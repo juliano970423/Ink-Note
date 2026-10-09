@@ -17,6 +17,42 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
+  # Windows 發布編譯：保證桌面端可打包，產物上傳為 artifact 供檢查。
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter build windows --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: build/windows/x64/runner/Release
+
+  # Android：debug APK 只驗證可編譯（不安裝不簽名），產物上傳供檢查。
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
   # iOS：Windows 開發機無法本地編譯，在 macos-14 上保證可編譯。
   # 不需要簽名證書/描述檔（--no-codesign），產物上傳為 artifact 供檢查。
   build-ios:
@@ -35,7 +71,7 @@ jobs:
           name: ios-build
           path: build/ios/iphoneos
 
-  # Linux：無設備可測，只做冒煙編譯驗證無平台依賴
+  # Linux：analyze + 測試 + 冒煙編譯，驗證無平台依賴
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -48,4 +84,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang cmake git ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev
       - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
       - run: flutter build linux

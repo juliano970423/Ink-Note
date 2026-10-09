@@ -422,7 +422,7 @@ Future<({Uint8List png, int w, int h})?> renderPdfPageVector(
       ui.Paint()..color = const ui.Color(0xFFFFFFFF),
     );
     final st = stats ?? VectorRenderStats();
-    final (m, _, __) = _displayTransform(crop, page.rotation, scale);
+    final (m, _, _) = _displayTransform(crop, page.rotation, scale);
     ui.Offset toScreen(double x, double y) => ui.Offset(
           m[0] * x + m[4] * y + m[12],
           m[1] * x + m[5] * y + m[13],

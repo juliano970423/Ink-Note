@@ -127,7 +127,7 @@ Uint8List buildVectorPdf({
     }
     if (drop.isNotEmpty) editor.removePages(drop);
     // 剩下的源頁按顯示順序排（keepSrc 無重複；恆等排列跳過）。
-    final keepSrc = [for (final s in effSrc) if (s != null) s];
+    final keepSrc = effSrc.whereType<int>().toList();
     final cur = used.toList()..sort();
     final order = [for (final s in keepSrc) cur.indexOf(s)];
     if (order.asMap().entries.any((e) => e.key != e.value)) {
