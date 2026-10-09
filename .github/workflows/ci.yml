@@ -33,7 +33,8 @@ jobs:
           name: windows-build
           path: build/windows/x64/runner/Release
 
-  # Android：debug APK 只驗證可編譯（不安裝不簽名），產物上傳供檢查。
+  # Android：release APK 驗證可編譯可安裝（無正式 keystore 時
+  # 用 debug key 簽名：adb 可直接裝，僅上架 Play 才需正式簽名）。
   build-android:
     runs-on: ubuntu-latest
     steps:
@@ -47,14 +48,20 @@ jobs:
           channel: stable
       - run: flutter pub get
       - run: flutter analyze
-      - run: flutter build apk --debug
+      - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
-  # iOS：Windows 開發機無法本地編譯，在 macos-14 上保證可編譯。
+  # iOS：macos-14 保證可編譯（flutter build ios 預設即 release）。
   # 不需要簽名證書/描述檔（--no-codesign），產物上傳為 artifact 供檢查。
+  # 注意：未簽名的 .app/IPA 裝不上真機（只能跑模擬器）。
+  # 真機安裝二選一：
+  #   (a) 免費 Apple ID：本地用 Sideloadly/AltStore 重簽下面的
+  #       unsigned IPA 再裝（7 天有效期，到期重簽）；
+  #   (b) 付費開發者帳號：把 P12＋provisioning profile 存成 Secrets，
+  #       CI 改走簽名後 flutter build ipa＋TestFlight。
   build-ios:
     runs-on: macos-14
     steps:
@@ -66,10 +73,15 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build ios --no-codesign
+      - name: Package unsigned IPA (for local re-sign)
+        run: |
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/*.app Payload/
+          zip -r build/unsigned.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: ios-build
-          path: build/ios/iphoneos
+          name: ios-unsigned-ipa
+          path: build/unsigned.ipa
 
   # Linux：analyze + 測試 + 冒煙編譯，驗證無平台依賴
   build-linux:
