@@ -137,14 +137,20 @@ class InkCanvasState extends State<InkCanvas> {
   // 單指平移（唯讀模式 / 防誤觸下的觸屏）
   Offset? _singlePanLast;
 
-  /// 該指針是否參與手勢計數。被防誤觸拒絕的手指（手掌误放）
-  /// 不計數，免得 permanent 雙指、手掌抬起時誤清進行中的筆。
+  /// 該指針是否參與手勢計數。觸屏永遠計數（雙指縮放/單指平移自由，
+  /// 防誤觸只管「落筆」，不管導航）；手掌誤放由落筆處的手掌保護擋，
+  /// 不進雙指、不搶書寫。
   bool _triggersGesture(PointerDeviceKind kind) {
-    if (_acceptKind(kind)) return true;
-    if (kind != PointerDeviceKind.touch) return false;
-    if (widget.tool == ToolMode.lasso) return true;
-    if (widget.readOnly) return true;
-    return false;
+    return true;
+  }
+
+  /// 手掌闖入：防誤觸開、觸屏事件、且有別人的非觸屏書寫會話在進行。
+  /// 手掌的落下/抬起不碰書寫會話（不停頓計時、不清 _live）。
+  bool _isPalmIntrusion(PointerEvent e) {
+    if (!widget.palmRejection) return false;
+    if (e.kind != PointerDeviceKind.touch) return false;
+    if (_live == null || _primary == null) return false;
+    return _kinds[_primary] != PointerDeviceKind.touch;
   }
 
   int _gestureCount() {
@@ -404,7 +410,8 @@ class InkCanvasState extends State<InkCanvas> {
   }
 
   void _onDown(PointerDownEvent e) {
-    _cancelDwell();
+    // 手掌落下不取消筆的停頓計時（書寫會話還在繼續）
+    if (!_isPalmIntrusion(e)) _cancelDwell();
     _purgeStale(e.timeStamp);
     // 右鍵拖拽平移（桌面端），任何工具下都可用
     if (e.buttons & kSecondaryMouseButton != 0) {
@@ -426,9 +433,10 @@ class InkCanvasState extends State<InkCanvas> {
       _twoTapDownTime = null;
       _twoTapDownMid = null;
     }
-    // 第二指按下 → 轉雙指平移/縮放，作廢進行中的筆畫與圈選路徑
+    // 第二指按下 → 轉雙指平移/縮放，作廢進行中的筆畫與圈選路徑；
+    // 但筆書寫中後落的手指是手掌：已 track（防 stale），不轉雙指不作廢
     if (_gestureCount() >= 2) {
-      _twoFinger = true;
+      if (_isPalmIntrusion(e)) return;      _twoFinger = true;
       _twoStartMid = _midpoint();
       _twoStartTime = e.timeStamp;
       _live = null;
@@ -641,12 +649,11 @@ class InkCanvasState extends State<InkCanvas> {
     if (live == null) return;
     final pos = _clampLocal(_localOf(stacked, live.page), live.page);
     final last = live.positions.last;
-    // 停頓抖動：位移 <6px 且距上個收錄點 >150ms → 不收点
-    // （慢畫不斷點、按住手抖不結坨，停頓計時也不被抖重置）
+    // 原地抖動（手寫筆靜止噪聲/按住手抖）：位移 <6px → 不收點、
+    // 不重計停頓（停頓計時繼續走，收筆 dwell 照算；慢畫不斷點：
+    // 點雖吞但 last 不動，位移累積超限即收＋插值補形）
     final holdGap = (pos - last).distance;
-    final holdDt =
-        (e.timeStamp - live.times.last).inMicroseconds;
-    if (holdGap < 6 / widget.scale && holdDt > 150000) {
+    if (holdGap < 6 / widget.scale) {
       return;
     }
     final interpolated = interpolateGap(last, pos);
@@ -770,7 +777,8 @@ class InkCanvasState extends State<InkCanvas> {
       _twoTapDownMid = null;
     }
     if (!known) return; // 沒見過的指針：只清記錄，不碰進行中的筆
-    _cancelDwell();
+    // 手掌抬起不碰筆的停頓計時
+    if (!_isPalmIntrusion(e)) _cancelDwell();
     if (_rightPanLast != null && _active.isEmpty) _rightPanLast = null;
     if (_twoFinger) {
       if (_active.length < 2) {
@@ -860,7 +868,11 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (!_acceptKind(e.kind)) {
-      _live = null;
+      // 被拒的指針（手掌）抬起：只清自己的，不碰別人的書寫會話
+      if (_primary == null || e.pointer == _primary) {
+        _live = null;
+        _primary = null;
+      }
       return;
     }
     if (_primary != null && e.pointer != _primary) return;

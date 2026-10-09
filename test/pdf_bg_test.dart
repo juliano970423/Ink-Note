@@ -405,6 +405,128 @@ void main() {
     expect(blueBottom, greaterThan(10000));
   });
 
+  testWidgets('palm rejection + pen: two touch fingers still zoom',
+      (tester) async {
+    var zoomed = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: true,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseCommitted: (_) {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {
+            zoomed++;
+          },
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final g1 = await tester.startGesture(const Offset(600, 400));
+    final g2 = await tester.startGesture(const Offset(680, 400));
+    await g1.moveTo(const Offset(560, 400));
+    await g2.moveTo(const Offset(720, 400));
+    await tester.pump();
+    // 防誤觸只管落筆：雙指縮放必須照常觸發
+    expect(zoomed, greaterThan(0));
+    await g1.up();
+    await tester.pump();
+    await g2.up();
+    await tester.pump();
+  });
+
+  testWidgets('stylus jitter does not kill dwell (shapes still snap)',
+      (tester) async {
+    var dwell = -1;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: true,
+          onStrokeCompleted: (_, d) {
+            dwell = d;
+          },
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseCommitted: (_) {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final g = await tester.startGesture(const Offset(400, 400),
+        kind: ui.PointerDeviceKind.stylus);
+    // 事件 timeStamp 顯式遞增（tester 的手勢時鐘不隨 pump 推進，
+    // dwell 只能靠顯式時間算；真機上 timeStamp 是真實時間）
+    var t = const Duration(milliseconds: 100);
+    Future<void> step(Offset p, int ms) async {
+      t += Duration(milliseconds: ms);
+      await g.moveTo(p, timeStamp: t);
+    }
+
+    await step(const Offset(460, 400), 100);
+    await step(const Offset(460, 460), 100);
+    await step(const Offset(400, 460), 100);
+    await step(const Offset(400, 400), 100);
+    // 原地噪聲 1.2s（每次位移 <6px）：修前會無限重計停頓＋刷新末點，
+    // dwell≈100ms 形狀不修正；修後噪聲被吞，dwell 照算
+    for (var i = 0; i < 12; i++) {
+      await step(
+          Offset(400.0 + (i % 2), 400.0 + ((i + 1) % 2)), 100);
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    t += const Duration(milliseconds: 100);
+    await g.up(timeStamp: t);
+    await tester.pump();
+    expect(dwell, greaterThanOrEqualTo(1000));
+  });
+
   test('pageBoxMetas: 不渲染给全部页建条目', () async {
     final doc = pw.Document();
     doc.addPage(pw.Page(
