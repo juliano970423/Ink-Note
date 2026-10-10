@@ -1037,41 +1037,47 @@ class _EditorPageState extends State<EditorPage> {
     _scheduleAutosave();
   }
 
-  /// 像素橡皮提交（放開一次算一筆操作）：按頁分組沿路徑抹除並斷筆。
-  /// 隱藏圖層不碰。
-  void _onPixelEraseCommitted(Map<int, List<Offset>> byPage) {
+  /// 像素橡皮按段即刪（拖動中逐段回調）：沿段抹除並斷筆，隱藏圖層不碰；
+  /// 整個拖抹只在首刪時 checkpoint，一次 undo 整批回來。
+  void _onPixelEraseTick(List<Offset> chunk, int page) {
     final radius = _pixelRadius;
     var cur = List<Stroke>.from(_note.strokes);
     var changed = false;
-    for (final entry in byPage.entries) {
-      final page = entry.key;
-      for (final pos in _densePath(entry.value, radius / 2)) {
-        final next = <Stroke>[];
-        for (final s in cur) {
-          if (s.page != page ||
-              _note.hiddenLayers.contains(s.layer)) {
-            next.add(s);
-            continue;
-          }
-          final rest = eraseStrokePoints(s, pos, radius);
-          if (rest.length == 1 &&
-              rest.first.points.length == s.points.length) {
-            next.add(s); // 點數不變 = 沒抹到
-          } else {
-            changed = true;
-            next.addAll(rest);
-          }
+    for (final pos in _densePath(chunk, radius / 2)) {
+      final next = <Stroke>[];
+      for (final s in cur) {
+        if (s.page != page || _note.hiddenLayers.contains(s.layer)) {
+          next.add(s);
+          continue;
         }
-        cur = next;
+        final rest = eraseStrokePoints(s, pos, radius);
+        if (rest.length == 1 &&
+            rest.first.points.length == s.points.length) {
+          next.add(s); // 點數不變 = 沒抹到
+        } else {
+          changed = true;
+          next.addAll(rest);
+        }
       }
+      cur = next;
     }
-    if (changed) {
+    if (!changed) return;
+    if (!_eraseSessionActive) {
       _checkpoint();
-      setState(() => _note.strokes = cur);
-      _pruneSelection();
-      _canvasKey.currentState?.invalidateCache();
-      _scheduleAutosave();
+      _eraseSessionActive = true;
     }
+    setState(() => _note.strokes = cur);
+    _pruneSelection();
+    _canvasKey.currentState?.invalidateCache();
+  }
+
+  /// 像素橡皮會話結束（抬起/取消）：有刪才存檔結算。
+  void _onPixelEraseEnd() {
+    if (!_eraseSessionActive) return;
+    _eraseSessionActive = false;
+    _reclampPan();
+    _canvasKey.currentState?.invalidateCache();
+    _scheduleAutosave();
   }
 
   // ---------- 圈選 ----------
@@ -1803,7 +1809,8 @@ class _EditorPageState extends State<EditorPage> {
                   onStrokeCompleted: _onStrokeCompleted,
                   onStrokeEraseTick: _onStrokeEraseTick,
                   onStrokeEraseEnd: _onStrokeEraseEnd,
-                  onPixelEraseCommitted: _onPixelEraseCommitted,
+                  onPixelEraseTick: _onPixelEraseTick,
+                  onPixelEraseEnd: _onPixelEraseEnd,
                   panOffset: _panOffset,
                   scale: _scale,
                   onPanUpdate: _onPanUpdate,

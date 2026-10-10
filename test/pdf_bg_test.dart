@@ -313,7 +313,8 @@ void main() {
           onStrokeCompleted: (_, _) {},
           onStrokeEraseTick: (_, _) {},
           onStrokeEraseEnd: () {},
-          onPixelEraseCommitted: (_) {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -426,7 +427,8 @@ void main() {
           onStrokeCompleted: (_, _) {},
           onStrokeEraseTick: (_, _) {},
           onStrokeEraseEnd: () {},
-          onPixelEraseCommitted: (_) {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -482,7 +484,8 @@ void main() {
           },
           onStrokeEraseTick: (_, _) {},
           onStrokeEraseEnd: () {},
-          onPixelEraseCommitted: (_) {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -550,7 +553,8 @@ void main() {
           },
           onStrokeEraseTick: (_, _) {},
           onStrokeEraseEnd: () {},
-          onPixelEraseCommitted: (_) {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -604,7 +608,8 @@ void main() {
           onStrokeCompleted: (_, _) {},
           onStrokeEraseTick: (_, _) {},
           onStrokeEraseEnd: () {},
-          onPixelEraseCommitted: (_) {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -660,7 +665,8 @@ void main() {
           onStrokeCompleted: (_, _) {},
           onStrokeEraseTick: (_, _) {},
           onStrokeEraseEnd: () {},
-          onPixelEraseCommitted: (_) {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -717,5 +723,58 @@ void main() {
     expect(metas[1].h, closeTo(1697, 2));
     // 垃圾字节抛错（调用方走打不开流程）
     expect(() => pageBoxMetas(Uint8List.fromList([1, 2, 3])), throwsA(anything));
+  });
+
+  testWidgets('pixel eraser ticks during drag (real-time)', (tester) async {
+    var ticks = 0, ends = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pixelEraser,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {
+            ticks++;
+          },
+          onPixelEraseEnd: () {
+            ends++;
+          },
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final g = await tester.startGesture(const Offset(400, 400));
+    await g.moveTo(const Offset(460, 400));
+    await tester.pump();
+    // 落筆 1 次＋拖動中多次：修前拖動中零回調（放開才提交）
+    expect(ticks, greaterThanOrEqualTo(2));
+    await g.up();
+    await tester.pump();
+    expect(ends, 1);
   });
 }

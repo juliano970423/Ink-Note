@@ -33,8 +33,11 @@ class InkCanvas extends StatefulWidget {
   /// 整個拖抹只算一次 undo（上層會話首刪時 checkpoint）。
   final void Function(List<Offset> chunk, int page) onStrokeEraseTick;
   final VoidCallback onStrokeEraseEnd;
-  /// 像素橡皮放開提交：按頁分組的頁內座標路徑（跨頁拖抹會拆成多組）。
-  final void Function(Map<int, List<Offset>> byPage) onPixelEraseCommitted;
+  /// 像素橡皮：拖動中按段即刪——按下/移動就回調 ([chunk], [page])（頁內座標），
+  /// 上層沿路徑抹除並斷筆；抬起時調 [onPixelEraseEnd] 結算（只存檔一次）。
+  /// 整個拖抹只算一次 undo（上層會話首刪時 checkpoint）。
+  final void Function(List<Offset> chunk, int page) onPixelEraseTick;
+  final VoidCallback onPixelEraseEnd;
   final Offset panOffset;
   final double scale;
   final void Function(Offset delta) onPanUpdate;
@@ -85,7 +88,8 @@ class InkCanvas extends StatefulWidget {
     required this.onStrokeCompleted,
     required this.onStrokeEraseTick,
     required this.onStrokeEraseEnd,
-    required this.onPixelEraseCommitted,
+    required this.onPixelEraseTick,
+    required this.onPixelEraseEnd,
     required this.panOffset,
     required this.scale,
     required this.onPanUpdate,
@@ -497,9 +501,12 @@ class InkCanvasState extends State<InkCanvas> {
       _erasing = true;
       _erasePath = [stacked];
       _primary = e.pointer;
+      // 落筆點立即試刪（點按即擦；點按空白不留 checkpoint；可跨頁）
+      final page = _pageOfY(stacked.dy);
       if (widget.tool == ToolMode.strokeEraser) {
-        final page = _pageOfY(stacked.dy);
         widget.onStrokeEraseTick([_localOf(stacked, page)], page);
+      } else {
+        widget.onPixelEraseTick([_localOf(stacked, page)], page);
       }
       setState(() {});
       return;
@@ -619,7 +626,7 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (!_acceptKind(e.kind)) return;
-    // 橡皮拖動中：按筆畫的即刪即回調（按頁拆分），像素的只累路徑（僅所屬指針）
+    // 橡皮拖動中：兩種都按段即刪即回調（按頁拆成連段，頁內座標）
     if (_erasing &&
         (_primary == null || e.pointer == _primary) &&
         (widget.tool == ToolMode.pixelEraser ||
@@ -629,14 +636,18 @@ class InkCanvasState extends State<InkCanvas> {
         final prev = _erasePath.isEmpty ? stacked : _erasePath.last;
         final grown = interpolateGap(prev, stacked, maxGap: 4.0);
         setState(() => _erasePath = [..._erasePath, ...grown]);
-        if (widget.tool == ToolMode.strokeEraser && grown.isNotEmpty) {
+        if (grown.isNotEmpty) {
           // 跨頁拖抹按頁拆成連段，分別回調頁內座標
           var runPage = _pageOfY(grown.first.dy);
           var run = <Offset>[];
           void flush() {
             if (run.isNotEmpty) {
-              widget.onStrokeEraseTick(
-                  [for (final p in run) _localOf(p, runPage)], runPage);
+              final seg = [for (final p in run) _localOf(p, runPage)];
+              if (widget.tool == ToolMode.strokeEraser) {
+                widget.onStrokeEraseTick(seg, runPage);
+              } else {
+                widget.onPixelEraseTick(seg, runPage);
+              }
               run = <Offset>[];
             }
           }
@@ -831,8 +842,7 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     // 圈選不受防誤觸限制（顯式模式，手指亦可）
-    // 橡皮會話結束：按筆畫的早已逐段刪光，這裡只清游標結算；
-    // 像素的放開提交（按頁分組，僅所屬指針）
+    // 橡皮會話結束：兩種早已逐段刪光，這裡只清游標結算（僅所屬指針）
     if (_erasing) {
       if (e.pointer != _primary) return;
       _erasing = false;
@@ -840,14 +850,15 @@ class InkCanvasState extends State<InkCanvas> {
       final path = _erasePath;
       setState(() => _erasePath = []);
       if (widget.tool == ToolMode.pixelEraser) {
+        // 收尾补一段：up 位置超出末段时对齐（落筆頁內）
         if (path.isNotEmpty) {
-          final byPage = <int, List<Offset>>{};
-          for (final p in path) {
-            final pg = _pageOfY(p.dy);
-            (byPage[pg] ??= []).add(_localOf(p, pg));
+          final upPos = _content(e.localPosition);
+          if ((upPos - path.last).distance > 1) {
+            final page = _pageOfY(upPos.dy);
+            widget.onPixelEraseTick([_localOf(upPos, page)], page);
           }
-          widget.onPixelEraseCommitted(byPage);
         }
+        widget.onPixelEraseEnd();
       } else if (widget.tool == ToolMode.strokeEraser) {
         widget.onStrokeEraseEnd();
       }
@@ -944,11 +955,18 @@ class InkCanvasState extends State<InkCanvas> {
     _singlePanLast = null;
     _rotating = false;
     _rotateCenter = null;
-    final wasErasingStroke =
-        _erasing && widget.tool == ToolMode.strokeEraser;
+    final wasErasing = _erasing;
+    final wasPixel = widget.tool == ToolMode.pixelEraser;
     _erasing = false;
     _erasePath = [];
-    if (wasErasingStroke) widget.onStrokeEraseEnd();
+    if (wasErasing) {
+      // 逐段已刪光，只結算（像素/按筆畫各走各的 End）
+      if (wasPixel) {
+        widget.onPixelEraseEnd();
+      } else {
+        widget.onStrokeEraseEnd();
+      }
+    }
     if (_active.isEmpty) _blockUntilLift = false;
     _live = null;
     _lassoPath = [];
