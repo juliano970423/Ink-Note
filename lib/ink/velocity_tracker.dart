@@ -50,9 +50,9 @@ class StrokeParams {
   double size;
 
   StrokeParams({
-    this.maxSpeed = 1800.0,
+    this.maxSpeed = 1200.0,
     this.emaWeight = 0.6,
-    this.thinning = 0.6,
+    this.thinning = 0.7,
     this.streamline = 0.5,
     this.size = 4.0,
   });
@@ -74,9 +74,9 @@ class StrokeParams {
       };
 
   factory StrokeParams.fromJson(Map<String, dynamic> json) => StrokeParams(
-        maxSpeed: (json['maxSpeed'] as num?)?.toDouble() ?? 1800.0,
+        maxSpeed: (json['maxSpeed'] as num?)?.toDouble() ?? 1200.0,
         emaWeight: (json['emaWeight'] as num?)?.toDouble() ?? 0.6,
-        thinning: (json['thinning'] as num?)?.toDouble() ?? 0.6,
+        thinning: (json['thinning'] as num?)?.toDouble() ?? 0.7,
         streamline: (json['streamline'] as num?)?.toDouble() ?? 0.5,
         size: (json['size'] as num?)?.toDouble() ?? 4.0,
       );

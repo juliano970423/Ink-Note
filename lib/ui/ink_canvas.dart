@@ -714,19 +714,36 @@ class InkCanvasState extends State<InkCanvas> {
     return Offset(x / n, y / n);
   }
 
+  // 第二下已提前觸發 undo（窗口未關，再來第三下就進補償分支）
+  bool _twoTapFiredUndo = false;
+
   void _registerTwoTap(Duration now) {
     _twoTapTimes.removeWhere((t) => (now - t).inMicroseconds > 500 * 1000);
     _twoTapTimes.add(now);
     _twoTapTimer?.cancel();
-    // 等 500ms 看還有沒有下一點：兩下 undo，三下及以上 redo
-    _twoTapTimer = Timer(const Duration(milliseconds: 500), () {
-      final n = _twoTapTimes.length;
+    if (_twoTapTimes.length == 2 && !_twoTapFiredUndo) {
+      // 第二下抬起立刻 undo，不等 500ms；窗口照開 500ms 等第三下
+      widget.onTwoFingerDoubleTap();
+      _twoTapFiredUndo = true;
+      _twoTapTimer = Timer(const Duration(milliseconds: 500), () {
+        _twoTapTimes.clear();
+        _twoTapFiredUndo = false;
+      });
+      return;
+    }
+    if (_twoTapTimes.length >= 3 && _twoTapFiredUndo) {
+      // 第三下：淨效果應為 1 redo。前面已提前 undo 一次，
+      // 先 redo 撤銷它，再 redo 一次（三擊本義），共兩次
       _twoTapTimes.clear();
-      if (n == 2) {
-        widget.onTwoFingerDoubleTap();
-      } else if (n >= 3) {
-        widget.onTwoFingerTripleTap();
-      }
+      _twoTapFiredUndo = false;
+      widget.onTwoFingerTripleTap();
+      widget.onTwoFingerTripleTap();
+      return;
+    }
+    // 首下或窗口外的新序列：只開窗等下一點
+    _twoTapTimer = Timer(const Duration(milliseconds: 500), () {
+      _twoTapTimes.clear();
+      _twoTapFiredUndo = false;
     });
   }
 

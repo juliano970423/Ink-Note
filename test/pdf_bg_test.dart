@@ -527,6 +527,122 @@ void main() {
     expect(dwell, greaterThanOrEqualTo(1000));
   });
 
+  testWidgets('two-finger double tap fires immediately (no 500ms wait)',
+      (tester) async {
+    var undo = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseCommitted: (_) {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {
+            undo++;
+          },
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    Future<void> tapOnce() async {
+      final g1 = await tester.startGesture(const Offset(600, 400));
+      final g2 = await tester.startGesture(const Offset(680, 400));
+      await g1.up();
+      await g2.up();
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    await tapOnce();
+    expect(undo, 0);
+    await tapOnce();
+    // 第二下抬起立刻 undo，不等 500ms（修前此處為 0）
+    expect(undo, 1);
+  });
+
+  testWidgets('two-finger triple tap redoes twice (compensates early undo)',
+      (tester) async {
+    var undo = 0, redo = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseCommitted: (_) {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {
+            undo++;
+          },
+          onTwoFingerTripleTap: () {
+            redo++;
+          },
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    Future<void> tapOnce() async {
+      final g1 = await tester.startGesture(const Offset(600, 400));
+      final g2 = await tester.startGesture(const Offset(680, 400));
+      await g1.up();
+      await g2.up();
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    await tapOnce();
+    await tapOnce();
+    await tapOnce();
+    // 兩下時已提前 undo 一次；三下 redo 兩次（先撤銷提前的 undo，
+    // 再 redo 本義），淨效果 1 redo
+    expect(undo, 1);
+    expect(redo, 2);
+  });
+
   test('pageBoxMetas: 不渲染给全部页建条目', () async {
     final doc = pw.Document();
     doc.addPage(pw.Page(
