@@ -1,40 +1,22 @@
 # Ink Notes
 
-Flutter 手寫筆記 App：壓感筆跡、形狀修正、圖層、連續頁面、PDF 向量匯入／匯出。
+手寫筆記 App：壓感筆跡、形狀修正、圖層、連續頁面、PDF 向量匯入／匯出。
 
 ## 功能
 
-- **筆跡**：速度壓感（EMA＋smoothstep）、`perfect_freehand` 輪廓、筆／螢光／虛線／幾何筆
-- **形狀修正**：停頓滿 1s 預覽，直線／矩形／圓吸附（收筆 dwell 判定）
-- **橡皮**：按筆畫即刪、像素按段即擦，整次拖抹一次 undo
-- **圈選**：套索＋移動／旋轉，出紙部分抬起才裁
-- **頁面**：連續頁堆疊、頁面管理（排序／插空白／刪頁，筆跡重映射可撤銷）
-- **圖層**：多圖層＋隱藏（不畫、不命中、不匯出）
-- **PDF 匯入**：純 Dart 向量渲染（字形描邊＋系統字兜底），無 pdfium；懶加載＋縮放按需提清
-- **PDF 匯出**：向量增量保存（壓感 Ink／虛線／幾何／螢光），失敗回退光柵
-- **手勢**：雙指縮放／平移／快掃翻頁，雙指點兩下 undo、三下 redo（立刻觸發）
-- **防誤觸**：開後僅筆／滑鼠落筆，觸屏改平移，縮放自由，手掌不打斷書寫
+- **筆跡**：按書寫速度自動變化粗細，筆／螢光／虛線／幾何筆
+- **形狀修正**：畫完按住 1 秒，直線／方形／圓自動變直變正
+- **橡皮**：按筆畫整筆消失、像素擦沿路徑即時抹除，整次拖抹一次撤銷
+- **圈選**：套索圈起後可移動／旋轉
+- **頁面**：多頁連續書寫，可排序／插空白頁／刪頁
+- **圖層**：多圖層，可隱藏（隱藏的不顯示、不匯出）
+- **PDF 匯入**：PDF 當底圖直接在上面寫，放大也清晰
+- **PDF 匯出**：筆跡以向量寫回 PDF，字可選可搜
+- **手勢**：雙指縮放／移動／快掃翻頁，雙指點兩下撤銷、三下重做
+- **防誤觸**：開後只認觸控筆，手掌隨便放，不會亂畫也不打斷縮放
 
-## 儲存
+## 筆記存在哪
 
-- 桌面／移動端：文件儲存（`Documents/MyInkNotes`，每筆記一 JSON 原子寫入＋gzip 歷史＋縮圖／底圖／原 PDF）
-- Web：內存儲存（reload 不持久，僅預覽）
-- 手感參數可按設備調（設置頁：maxSpeed／emaWeight／thinning／streamline＋保存）
-
-## 開發
-
-```bash
-flutter pub get
-flutter analyze        # 須零問題（CI 擋）
-flutter test           # 全量測試
-flutter run -d windows # 桌面
-flutter run -d chrome  # Web 預覽
-```
-
-## CI（`.github/workflows/ci.yml`）
-
-- `test-windows`：analyze＋全量測試
-- `build-windows`：`flutter build windows --release`
-- `build-android`：`flutter build apk --release`（無正式 keystore 時 debug key 簽名，可 adb 直裝）
-- `build-ios`：`flutter build ios --no-codesign`＋未簽名 IPA（真機需本地重簽或付費帳號走 TestFlight）
-- `build-linux`：analyze＋測試＋編譯
+- Windows／手機／平板：存在本機文件，經測試重裝 App 前請先備份
+- 網頁版：只存內存，關掉就丟，正式用請用其他端
+- 手感（速度／粗細／平滑）可在設置頁按設備微調＋保存
