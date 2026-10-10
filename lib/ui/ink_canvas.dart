@@ -26,7 +26,7 @@ class InkCanvas extends StatefulWidget {
   final PenType penType;
   final ToolMode tool;
   final bool palmRejection;
-  /// 收筆回調：[dwellMs] 為真實停頓（抬起 - 末點，毫秒），形狀修正只認這個。
+  /// 收筆回調：[dwellMs] 為真實停頓（抬起 - 末個真移動，毫秒），形狀修正只認這個。
   final void Function(Stroke stroke, int dwellMs) onStrokeCompleted;
   /// 按筆畫橡皮：碰到即刪——按下/移動就回調 ([chunk], [page])（頁內座標，已按 4px 加密），
   /// 上層刪掉該頁命中筆跡；抬起時調 [onStrokeEraseEnd] 結算（只存檔一次）。
@@ -197,6 +197,10 @@ class InkCanvasState extends State<InkCanvas> {
   // 停頓預覽：按住 1s 不動，藏起原軌跡、顯示預計修正形狀
   Timer? _dwellTimer;
   List<Stroke>? _snapPreview;
+  // 停頓錨點：上個真移動的位置＋時刻。筆靜止噪聲/按住手抖
+  // 推不動錨點（停頓照算）；小字慢寫的點全收保形（只去重疊點）。
+  Offset _dwellAnchor = Offset.zero;
+  Duration _dwellAnchorTime = Duration.zero;
 
   @override
   void initState() {
@@ -513,6 +517,8 @@ class InkCanvasState extends State<InkCanvas> {
     live.positions.add(pos);
     live.pressures.add(1.0); // 起筆第一個點 pressure=1.0（落筆頓一下出粗點）
     live.times.add(e.timeStamp);
+    _dwellAnchor = pos;
+    _dwellAnchorTime = e.timeStamp;
     _armDwell();
     _primary = e.pointer;
     setState(() {
@@ -652,11 +658,10 @@ class InkCanvasState extends State<InkCanvas> {
     if (live == null) return;
     final pos = _clampLocal(_localOf(stacked, live.page), live.page);
     final last = live.positions.last;
-    // 原地抖動（手寫筆靜止噪聲/按住手抖）：位移 <6px → 不收點、
-    // 不重計停頓（停頓計時繼續走，收筆 dwell 照算；慢畫不斷點：
-    // 點雖吞但 last 不動，位移累積超限即收＋插值補形）
-    final holdGap = (pos - last).distance;
-    if (holdGap < 6 / widget.scale) {
+    // 去重：近乎重合的點不收（防按住抖結坨），其餘全收保形狀——
+    // 小字慢寫的相鄰點只有 1~3px，6px 一刀切會把彎拉成直線（「2」變「1」）。
+    final gap = (pos - last).distance;
+    if (gap < 1.5 / widget.scale) {
       return;
     }
     final interpolated = interpolateGap(last, pos);
@@ -668,7 +673,14 @@ class InkCanvasState extends State<InkCanvas> {
       live.pressures.add(pressure);
       live.times.add(e.timeStamp);
     }
-    _armDwell(); // 有新點就重計停頓；動起來自動切回原軌跡
+    // 停頓錨點：相對錨點位移超限才算真移動，重計停頓；
+    // 筆靜止噪聲/按住手抖永不推動錨點，停頓計時照走、收筆 dwell 照算。
+    // 動起來自動切回原軌跡（_armDwell 順手清預覽）。
+    if ((pos - _dwellAnchor).distance >= 6 / widget.scale) {
+      _dwellAnchor = pos;
+      _dwellAnchorTime = e.timeStamp;
+      _armDwell();
+    }
     // 進行中的筆畫：重算輪廓並重繪。
     // 長筆優化：perfect_freehand 是整筆重算（O(n²) 級），點多了每事件都算會卡；
     // 數據照常全收，輪廓最多 60fps 刷新，收筆時快照/縮圖用全量數據。
@@ -900,9 +912,10 @@ class InkCanvasState extends State<InkCanvas> {
     final live = _live;
     _live = null;
     if (live == null) return;
-    // 真實停頓 = 抬起時刻 - 末點時刻（收尾補點之前算，否則恆為 0）
+    // 真實停頓 = 抬起時刻 - 末個真移動時刻（噪聲/抖動不刷新錨點；
+    // 收尾補點之前算，否則恆為 0）
     final dwellMs =
-        (e.timeStamp - live.times.last).inMicroseconds ~/ 1000;
+        (e.timeStamp - _dwellAnchorTime).inMicroseconds ~/ 1000;
     if (live.positions.length == 1) {
       // 單點：保留為點筆（渲染為圓）
     } else {

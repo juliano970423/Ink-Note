@@ -527,6 +527,62 @@ void main() {
     expect(dwell, greaterThanOrEqualTo(1000));
   });
 
+  testWidgets('small slow writing keeps every point (no curve chording)',
+      (tester) async {
+    var npts = -1;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: true,
+          onStrokeCompleted: (s, _) {
+            npts = s.points.length;
+          },
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseCommitted: (_) {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final g = await tester.startGesture(const Offset(400, 400),
+        kind: ui.PointerDeviceKind.stylus);
+    // 小字慢寫：每步 3px（小字彎道常態）。6px 一刀切會全吞再拉直線，
+    // 「2」變「1」；修後只去重疊點（<1.5px），11 點全收
+    var t = const Duration(milliseconds: 100);
+    for (var i = 1; i <= 10; i++) {
+      t += const Duration(milliseconds: 100);
+      await g.moveTo(Offset(400.0 + i * 3, 400), timeStamp: t);
+    }
+    t += const Duration(milliseconds: 100);
+    await g.up(timeStamp: t);
+    await tester.pump();
+    expect(npts, 11);
+  });
+
   testWidgets('two-finger double tap fires immediately (no 500ms wait)',
       (tester) async {
     var undo = 0;
