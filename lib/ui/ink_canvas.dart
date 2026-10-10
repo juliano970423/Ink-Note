@@ -292,7 +292,8 @@ class InkCanvasState extends State<InkCanvas> {
       final strokes = widget.strokes
           .where((s) => !widget.hiddenLayers.contains(s.layer))
           .toList();
-      pic = await paintStrokesToPicture(strokes, hlWidth: widget.hlWidth);
+      pic = await paintStrokesToPicture(strokes,
+          hlWidth: widget.hlWidth, params: widget.params);
     } else {
       final groups = <PageLayer, List<Stroke>>{};
       for (final s in widget.strokes) {
@@ -314,7 +315,9 @@ class InkCanvasState extends State<InkCanvas> {
         return;
       }
       pic = await paintPagesToPicture(groups, origin,
-          hlWidth: widget.hlWidth, includeBackgrounds: false);
+          hlWidth: widget.hlWidth,
+          params: widget.params,
+          includeBackgrounds: false);
     }
     if (!mounted || gen != _picGen) {
       bgPic?.dispose();
@@ -1109,7 +1112,7 @@ class _InkPainter extends CustomPainter {
       final o = _shift(Offset.zero, livePage);
       canvas.translate(o.dx, o.dy);
       for (final s in preview) {
-        paintStroke(canvas, s, hlWidth: hlWidth);
+        paintStroke(canvas, s, hlWidth: hlWidth, params: params);
       }
       canvas.restore();
     } else {

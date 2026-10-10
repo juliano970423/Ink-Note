@@ -736,6 +736,7 @@ Future<ui.Picture> paintPagesToPicture(
   Map<PageLayer, List<Stroke>> groups,
   Offset Function(int page) origin, {
   double hlWidth = 3.0,
+  StrokeParams? params,
   Map<int, ui.Image>? backgrounds,
   Rect? Function(int page)? bgRectOf,
   bool includeBackgrounds = true,
@@ -760,7 +761,9 @@ Future<ui.Picture> paintPagesToPicture(
       canvas.translate(origin(k.page).dx, origin(k.page).dy);
       for (final s in groups[k]!) {
         final isHl = PenTypeLabel.parse(s.type) == PenType.highlighter;
-        if (isHl == passHl) paintStroke(canvas, s, hlWidth: hlWidth);
+        if (isHl == passHl) {
+          paintStroke(canvas, s, hlWidth: hlWidth, params: params);
+        }
       }
       canvas.restore();
     }
@@ -787,25 +790,26 @@ Future<ui.Picture> paintStrokesToPicture(
   List<Stroke> strokes, {
   ui.Size? logicalSize,
   double hlWidth = 3.0,
+  StrokeParams? params,
 }) async {
   final rec = ui.PictureRecorder();
   final canvas = ui.Canvas(rec);
-  paintStrokesLayered(canvas, strokes, hlWidth: hlWidth);
+  paintStrokesLayered(canvas, strokes, hlWidth: hlWidth, params: params);
   return rec.endRecording();
 }
 
 /// 螢光先畫、其餘後畫（縮圖 / PDF / 快取共用）。
 /// [hlWidth] 為螢光筆寬度倍數（相對 s.size）。
 void paintStrokesLayered(ui.Canvas canvas, List<Stroke> strokes,
-    {double hlWidth = 3.0}) {
+    {double hlWidth = 3.0, StrokeParams? params}) {
   for (final s in strokes) {
     if (PenTypeLabel.parse(s.type) == PenType.highlighter) {
-      paintStroke(canvas, s, hlWidth: hlWidth);
+      paintStroke(canvas, s, hlWidth: hlWidth, params: params);
     }
   }
   for (final s in strokes) {
     if (PenTypeLabel.parse(s.type) != PenType.highlighter) {
-      paintStroke(canvas, s, hlWidth: hlWidth);
+      paintStroke(canvas, s, hlWidth: hlWidth, params: params);
     }
   }
 }
@@ -823,7 +827,8 @@ Path _centerPath(Stroke s) {
 
 /// 在 dart:ui 畫布上繪製單筆（縮圖 / PDF / Picture 快取共用）。
 /// 壓感取自存好的 `p`，不重算。螢光透明度取自存好的 `alpha`。
-void paintStroke(ui.Canvas canvas, Stroke s, {double hlWidth = 3.0}) {
+void paintStroke(ui.Canvas canvas, Stroke s,
+    {double hlWidth = 3.0, StrokeParams? params}) {
   final type = PenTypeLabel.parse(s.type);
   final alpha = s.alpha.clamp(0.05, 1.0);
   // 幾何筆（修正產物）：折線控制點直接描邊，首尾相接的閉環；
@@ -916,8 +921,10 @@ void paintStroke(ui.Canvas canvas, Stroke s, {double hlWidth = 3.0}) {
   }
   final positions = s.points.map((e) => Offset(e.x, e.y)).toList();
   final pressures = s.points.map((e) => e.p).toList();
-  final params = StrokeParams()..size = s.size;
-  final outline = strokeOutline(positions, pressures, params: params);
+  // 輪廓參數必須和書寫預覽用同一套（thinning/streamline），否則收筆閃變；
+  // size 取存檔值，壓感取存好的 p，不重算。
+  final eff = (params ?? StrokeParams()).copy()..size = s.size;
+  final outline = strokeOutline(positions, pressures, params: eff);
   if (outline.length < 3) return;
   final path = Path()..moveTo(outline.first.dx, outline.first.dy);
   for (var i = 1; i < outline.length; i++) {

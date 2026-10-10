@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_notes/ink/stroke_renderer.dart';
+import 'package:ink_notes/ink/velocity_tracker.dart';
 import 'package:ink_notes/models/note.dart';
 
 Future<ui.Image> _render(List<Stroke> strokes) async {
@@ -147,8 +148,7 @@ void main() {
     expect(p[2], inInclusiveRange(100, 220));
   });
 
-  test('修正產物帶 geometric 標記，存檔往返保留', () {
-    const s = Stroke(color: '#000', size: 4, points: [], geometric: true);
+  test('修正產物帶 geometric 標記，存檔往返保留', () {    const s = Stroke(color: '#000', size: 4, points: [], geometric: true);
     final rt =
         Stroke.fromJson(Map<String, dynamic>.from(s.toJson()));
     expect(rt.geometric, isTrue);
@@ -159,5 +159,46 @@ void main() {
     // 舊文件（無欄位）預設 false
     final rt3 = Stroke.fromJson({'color': '#000', 'size': 4.0, 'points': []});
     expect(rt3.geometric, isFalse);
+  });
+
+  test('落盤用傳入params：thinning 不同粗細不同（收筆不閃變）', () async {
+    // 同一筆（壓感 1.0→0.1 漸變）：thinning 越大越細。
+    // 修前 paintStroke 無視傳入 params，兩者渲染完全相同。
+    final s = Stroke(
+      color: '#000000',
+      size: 8.0,
+      points: [
+        for (var i = 0; i < 10; i++)
+          NotePoint(x: 20.0 + i * 18, y: 100, p: 1.0 - i * 0.1, t: i * 16),
+      ],
+      type: 'brush',
+    );
+    Future<int> colRows(double thinning) async {
+      final pic = await paintStrokesToPicture([s],
+          params: StrokeParams()..thinning = thinning);
+      final img = await pic.toImage(200, 200);
+      final bytes = (await img.toByteData(
+              format: ui.ImageByteFormat.rawRgba))!
+          .buffer
+          .asUint8List();
+      // 末端列（x=182，壓感最小 p=0.1，thinning 差異最大處）的墨水行數
+      var rows = 0;
+      for (var y = 0; y < 200; y++) {
+        final o = (y * 200 + 182) * 4;
+        if (bytes[o + 3] > 128 &&
+            (bytes[o] < 128 || bytes[o + 1] < 128 || bytes[o + 2] < 128)) {
+          rows++;
+        }
+      }
+      img.dispose();
+      pic.dispose();
+      return rows;
+    }
+
+    final r0 = await colRows(0.0);
+    final r9 = await colRows(0.9);
+    expect(r0, greaterThan(0));
+    expect(r9, greaterThan(0));
+    expect(r9, lessThan(r0));
   });
 }

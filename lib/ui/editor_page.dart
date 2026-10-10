@@ -416,6 +416,7 @@ class _EditorPageState extends State<EditorPage> {
                 .where((s) => !_note.hiddenLayers.contains(s.layer))
                 .toList(),
             hlWidth: _hlWidth,
+            params: _params,
             bgImage: bg,
             bgRect: bgRect);
         if (png != null) {
@@ -2457,6 +2458,7 @@ class _EditorPageState extends State<EditorPage> {
 Future<Uint8List?> renderThumbnail(List<Stroke> strokes,
     {double maxWidth = 240,
     double hlWidth = 3.0,
+    StrokeParams? params,
     ui.Image? bgImage,
     Rect? bgRect}) async {
   ui.Image? bg = bgImage;
@@ -2502,7 +2504,7 @@ Future<Uint8List?> renderThumbnail(List<Stroke> strokes,
       ui.Paint(),
     );
   }
-  paintStrokesLayered(canvas, strokes, hlWidth: hlWidth);
+  paintStrokesLayered(canvas, strokes, hlWidth: hlWidth, params: params);
   final pic = rec.endRecording();
   final img = await pic.toImage(
       (w * scale).round().clamp(1, 1024), (h * scale).round().clamp(1, 1024));
