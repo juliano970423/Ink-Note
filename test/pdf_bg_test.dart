@@ -749,7 +749,7 @@ void main() {
     expect(() => pageBoxMetas(Uint8List.fromList([1, 2, 3])), throwsA(anything));
   });
 
-  testWidgets('pixel eraser ticks during drag (real-time)', (tester) async {    var ticks = 0, ends = 0;
+    testWidgets('pixel eraser ticks during drag (real-time)', (tester) async {    var ticks = 0, ends = 0;
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: InkCanvas(
@@ -905,5 +905,66 @@ void main() {
     await tester.pump();
     expect(selected, isNull);
     img.dispose();
+  });
+
+  testWidgets('palm rejection + lasso: touch pans instead of lassoing',
+      (tester) async {
+    var pans = 0, lassos = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.lasso,
+          palmRejection: true,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {
+            pans++;
+          },
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {
+            lassos++;
+          },
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 手指畫圈：防誤觸開＝平移，不圈選（修前 lassos==1）
+    final g = await tester.startGesture(const Offset(400, 300));
+    await g.moveTo(const Offset(500, 300));
+    await g.moveTo(const Offset(500, 400));
+    await g.moveTo(const Offset(400, 400));
+    await g.moveTo(const Offset(400, 300));
+    await tester.pump();
+    await g.up();
+    await tester.pump();
+    expect(lassos, 0);
+    expect(pans, greaterThan(0));
   });
 }

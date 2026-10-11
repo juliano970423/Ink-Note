@@ -581,8 +581,15 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (_blockUntilLift) return;
-    // 圈選是顯式模式：任何輸入（手指/筆/滑鼠）都能圈，不受防誤觸限制
+    // 圈選工具：筆/滑鼠照常圈；防誤觸開時手指不圈（改單指平移，
+    // 否則手掌誤放滿屏亂圈，與筆工具規則一致）
     if (widget.tool == ToolMode.lasso) {
+      if (widget.palmRejection && e.kind == PointerDeviceKind.touch) {
+        _singlePanLast = e.localPosition;
+        _primary = e.pointer;
+        _live = null;
+        return;
+      }
       final pos = _content(e.localPosition);
       // 旋轉手柄優先：抓住就進旋轉，不移動不重圈
       final handle = _rotateHandle();
@@ -1028,7 +1035,6 @@ class InkCanvasState extends State<InkCanvas> {
       if (_primary == e.pointer) _primary = null;
       return;
     }
-    // 圈選不受防誤觸限制（顯式模式，手指亦可）
     // 橡皮會話結束：兩種早已逐段刪光，這裡只清游標結算（僅所屬指針）
     if (_erasing) {
       if (e.pointer != _primary) return;

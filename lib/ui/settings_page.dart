@@ -88,7 +88,7 @@ class _SettingsPageState extends State<SettingsPage> {
             child: SwitchListTile(
               title: const Text('手掌誤觸拒絕 (palmRejection)'),
               subtitle: const Text(
-                  '開啟後觸控筆書寫、一根手指改為滑動畫布（Apple Pencil / S Pen 用戶需要；圈選工具內手指照常用）'),
+                  '開啟後觸控筆書寫/圈選，一根手指改為滑動畫布（Apple Pencil / S Pen 用戶需要）'),
               value: widget.settings.palmRejection,
               onChanged: (v) async {
                 setState(() => widget.settings.palmRejection = v);
