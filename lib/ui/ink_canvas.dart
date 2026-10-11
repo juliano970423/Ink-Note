@@ -221,6 +221,9 @@ class InkCanvasState extends State<InkCanvas> {
   bool _imgResizing = false;
   Offset? _imgDragLast;
   bool _imgDragStarted = false;
+  // 空點取消待定：有圖選中時筆點空白，先取消選中；抬起時沒畫出東西
+  // 就不提交（只取消，不多一筆點筆）；真畫了就正常落筆。
+  int? _emptyTapArmed;
   // 上一代底圖 clone（隔代釋放，見 setBgImages）
   Map<int, ui.Image> _retiredBgImgs = {};
   // 橡皮會話：拖動中只累路徑+畫游標，放開才提交
@@ -647,7 +650,16 @@ class InkCanvasState extends State<InkCanvas> {
         _primary = e.pointer;
         return;
       }
-      if (_selectedImageId != null) _selectImage(null);
+      // 空白：有圖選中（點選/圈選）就取消，筆跡選區不動；
+      // 本次落筆若沒畫出東西就不提交（點空即取消，不多一筆點筆）。
+      final hadImgSel = _selectedImageId != null ||
+          widget.selectedImageIds.isNotEmpty;
+      if (_selectedImageId != null) {
+        _selectImage(null);
+      } else if (hadImgSel) {
+        widget.onImageSelected(null);
+      }
+      _emptyTapArmed = hadImgSel ? e.pointer : null;
     }
     // 橡皮：開會話，落筆點立即試刪（點按空白不留 checkpoint；可跨頁）
     if (widget.tool == ToolMode.strokeEraser ||
@@ -1112,7 +1124,20 @@ class InkCanvasState extends State<InkCanvas> {
     _primary = null;
     final live = _live;
     _live = null;
-    if (live == null) return;
+    if (live == null) {
+      _emptyTapArmed = null;
+      return;
+    }
+    // 空點取消：有圖選中時點空白，沒畫出東西就不提交（只取消選中）；
+    // 真畫了就正常落筆。
+    if (_emptyTapArmed != null && e.pointer == _emptyTapArmed) {
+      _emptyTapArmed = null;
+      if (live.positions.length <= 1) {
+        _cancelDwell();
+        setState(() => _liveOutline = []);
+        return;
+      }
+    }
     // 真實停頓 = 抬起時刻 - 末個真移動時刻（噪聲/抖動不刷新錨點；
     // 收尾補點之前算，否則恆為 0）
     final dwellMs =
@@ -1136,6 +1161,9 @@ class InkCanvasState extends State<InkCanvas> {
   void _onCancel(PointerCancelEvent e) {
     _untrack(e.pointer);
     _cancelDwell();
+    if (_emptyTapArmed != null && e.pointer == _emptyTapArmed) {
+      _emptyTapArmed = null;
+    }
     if (_primary != null && e.pointer != _primary) return;
     _primary = null;
     final wasTwoFinger = _twoFinger;

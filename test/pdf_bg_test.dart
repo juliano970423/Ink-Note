@@ -984,6 +984,76 @@ void main() {
     expect(strokes, 2);
   });
 
+  testWidgets('stylus tap on empty deselects image without dotting',
+      (tester) async {
+    String? selected = 'init';
+    var strokes = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {
+            strokes++;
+          },
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (id) {
+            selected = id;
+          },
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    Future<void> stylusTap(Offset p) async {
+      final tg = await tester.startGesture(p,
+          kind: ui.PointerDeviceKind.stylus);
+      await tg.up();
+      await tester.pump();
+    }
+
+    // 筆點圖選中，再點空白：選中清掉，且不留點筆
+    await stylusTap(const Offset(150, 150));
+    expect(selected, 'im1');
+    await stylusTap(const Offset(500, 500));
+    expect(selected, isNull);
+    expect(strokes, 0);
+    // 選中已清：再點空白就是正常單點筆
+    await stylusTap(const Offset(500, 500));
+    expect(strokes, 1);
+  });
+
   testWidgets('palm rejection + lasso: touch pans instead of lassoing',
       (tester) async {
     var pans = 0, lassos = 0;

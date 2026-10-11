@@ -1225,10 +1225,10 @@ class _EditorPageState extends State<EditorPage> {
     await _insertImage(b);
   }
 
-  /// 圖片點選（畫布 tap 回調；先清圈選再單選，與圈選互斥）。
+  /// 圖片點選（畫布 tap 回調；選中時才清圈選，空點只清圖選，筆跡選區不動）。
   void _onImageSelected(String? id) {
     setState(() {
-      _deselect();
+      if (id != null) _deselect();
       _selectedImageIds = id == null ? {} : {id};
     });
   }
