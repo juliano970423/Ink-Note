@@ -72,14 +72,10 @@ class InkCanvas extends StatefulWidget {
   final List<int> hiddenLayers;
   /// 貼圖：meta 列表（構造參數，editor setState 更新）＋解碼圖
   /// （setNoteImages imperative＋clone 自持，仿底圖）。
-  /// 畫在底圖之上、筆跡之下（可直接在圖上批註；橡皮/圈選不碰圖片）。
-  /// 交互（筆工具下）：點圖選中，已選中圖上拖動＝移動，
-  /// 右下手柄拖＝等比縮放，點空白取消；想在圖上畫線先點空白取消選中。
-  /// 貼圖：meta 列表（構造參數，editor setState 更新）＋解碼圖
-  /// （setNoteImages imperative＋clone 自持，仿底圖）。
-  /// 畫在底圖之上、筆跡之下（可直接在圖上批註；橡皮/圈選不碰圖片）。
-  /// 交互（筆工具下）：點圖選中，已選中圖上拖動＝移動，
-  /// 右下手柄拖＝等比縮放，點空白取消；想在圖上畫線先點空白取消選中。
+  /// 按圖層烘進快取（同層筆跡蓋圖，上層一切蓋下層一切）。
+  /// 交互（筆工具下，僅觸控筆/滑鼠；手指永遠直接畫線）：
+  /// 點圖選中，已選中圖上拖動＝移動，右下手柄拖＝等比縮放，
+  /// 點空白取消；想在圖上畫線先點空白取消選中。
   final List<NoteImage> images;
   final void Function(String? id) onImageSelected;
   final VoidCallback onImageDragStart;
@@ -624,10 +620,11 @@ class InkCanvasState extends State<InkCanvas> {
     }
     if (!_acceptKind(e.kind)) return;
     final stacked = _content(e.localPosition);
-    // 貼圖操作（筆工具下；橡皮/圈選/唯讀走各自的分支出去了）：
+    // 貼圖操作（筆工具下，僅觸控筆/滑鼠；手指永遠直接畫線，
+    // 橡皮/圈選/唯讀走各自的分支出去了）：
     // 右下手柄→等比縮放，已選中圖內→移動，未選中圖→選中，空白→取消選中。
     // （想在圖上畫線：先點空白取消選中再畫。）
-    if (widget.tool == ToolMode.pen) {
+    if (widget.tool == ToolMode.pen && e.kind != PointerDeviceKind.touch) {
       final sel = _selectedMeta();
       if (sel != null) {
         final h = _imgHandleStacked();

@@ -874,14 +874,22 @@ void main() {
     tester.state<InkCanvasState>(find.byType(InkCanvas))
         .setNoteImages({'im1': img});
     await tester.pump();
-    // 點圖選中（純點選不調 drag start/end）
-    await tester.tapAt(const Offset(150, 150));
-    await tester.pump();
+    // 點圖選中（純點選不調 drag start/end；筆操作統一用 stylus，
+    // 手指只畫線不碰圖）
+    Future<void> stylusTap(Offset p) async {
+      final tg = await tester.startGesture(p,
+          kind: ui.PointerDeviceKind.stylus);
+      await tg.up();
+      await tester.pump();
+    }
+
+    await stylusTap(const Offset(150, 150));
     expect(selected, 'im1');
     expect(starts, 0);
     expect(ends, 0);
     // 圖內拖動＝移動（首動調 start，changed 累加）
-    final g = await tester.startGesture(const Offset(150, 150));
+    final g = await tester.startGesture(const Offset(150, 150),
+        kind: ui.PointerDeviceKind.stylus);
     await g.moveTo(const Offset(170, 160));
     await tester.pump();
     expect(starts, 1);
@@ -892,7 +900,8 @@ void main() {
     await tester.pump();
     expect(ends, 1);
     // 右下手柄拖＝等比縮放（測試直連畫布、meta 不回寫，手柄仍在初值 300,200）
-    final g2 = await tester.startGesture(const Offset(300, 200));
+    final g2 = await tester.startGesture(const Offset(300, 200),
+        kind: ui.PointerDeviceKind.stylus);
     await g2.moveTo(const Offset(320, 220));
     await tester.pump();
     expect(changed.last[2], greaterThan(200));
@@ -901,10 +910,78 @@ void main() {
     await tester.pump();
     expect(ends, 2);
     // 點空白取消選中
-    await tester.tapAt(const Offset(500, 500));
-    await tester.pump();
+    await stylusTap(const Offset(500, 500));
     expect(selected, isNull);
     img.dispose();
+  });
+
+  testWidgets('touch on image draws instead of moving it', (tester) async {
+    String? selected;
+    final changed = <List<double>>[];
+    var strokes = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {
+            strokes++;
+          },
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (id) {
+            selected = id;
+          },
+          onImageDragStart: () {},
+          onImageChanged: (id, x, y, w, h) {
+            changed.add([x, y, w, h]);
+          },
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 手指（預設 touch）在圖上點拖：不選中、不移動、照常落筆
+    await tester.tapAt(const Offset(150, 150));
+    await tester.pump();
+    expect(selected, isNull);
+    final g = await tester.startGesture(const Offset(150, 150));
+    await g.moveTo(const Offset(200, 150));
+    await tester.pump();
+    await g.up();
+    await tester.pump();
+    expect(selected, isNull);
+    expect(changed, isEmpty);
+    // 點一下一筆（單點筆）＋拖一筆：手指在圖上照常畫線
+    expect(strokes, 2);
   });
 
   testWidgets('palm rejection + lasso: touch pans instead of lassoing',
