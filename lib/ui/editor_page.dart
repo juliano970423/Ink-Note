@@ -218,6 +218,8 @@ class _EditorPageState extends State<EditorPage> {
       } catch (_) {}
     }
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
+    // 貼圖烘進快取：解碼到達後必須重建，否則只見選中框不見圖
+    _canvasKey.currentState?.invalidateCache();
   }
 
   /// 該頁底圖鍵（舊文件無 key 兜底 `p{i}`，對應首次讀取自動改名的舊檔）。
@@ -1185,6 +1187,7 @@ class _EditorPageState extends State<EditorPage> {
     if (!mounted) return;
     setState(() => _selectedImageIds = {meta.id});
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
+    _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
 
@@ -1268,6 +1271,7 @@ class _EditorPageState extends State<EditorPage> {
       _selectedImageIds = {};
     });
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
+    _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
 
