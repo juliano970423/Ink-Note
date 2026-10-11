@@ -46,12 +46,13 @@ void main() {
   test('貼圖：NoteImage json 往返＋PNG 存取刪', () async {
     final n = _note('img001', '貼圖');
     n.images.add(const NoteImage(
-        id: 'ab12', page: 0, x: 10, y: 20, w: 100, h: 50));
+        id: 'ab12', page: 0, x: 10, y: 20, w: 100, h: 50, layer: 2));
     await repo.save(n);
     final loaded = await repo.load('img001');
     expect(loaded.images.length, 1);
     expect(loaded.images.first.id, 'ab12');
     expect(loaded.images.first.w, 100);
+    expect(loaded.images.first.layer, 2);
     // 舊文件無 images 欄位 → 空列表（向前相容）
     final legacy = Note.fromJson({
       'id': 'old01',

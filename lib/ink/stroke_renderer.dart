@@ -555,6 +555,43 @@ int flickDir(Offset delta, double dtSeconds) {
   return delta.dy < 0 ? 1 : -1;
 }
 
+/// 圈選命中圖片：任一角在圈內，或任一套索點在圖內，或邊相交。
+/// 調用方先按頁/隱藏層過濾（與 selectStrokes 同規矩）。
+List<NoteImage> selectImages(List<NoteImage> images, List<Offset> loop) {
+  if (loop.length < 3) return [];
+  final hit = <NoteImage>[];
+  for (final m in images) {
+    final corners = [
+      Offset(m.x, m.y),
+      Offset(m.x + m.w, m.y),
+      Offset(m.x + m.w, m.y + m.h),
+      Offset(m.x, m.y + m.h),
+    ];
+    var ok = corners.any((c) => pointInPolygon(c, loop));
+    if (!ok) {
+      ok = loop.any((p) =>
+          p.dx >= m.x &&
+          p.dx <= m.x + m.w &&
+          p.dy >= m.y &&
+          p.dy <= m.y + m.h);
+    }
+    if (!ok) {
+      outer:
+      for (var i = 0; i < 4; i++) {
+        final a = corners[i], b = corners[(i + 1) % 4];
+        for (var j = 0; j < loop.length; j++) {
+          if (_segIntersect(a, b, loop[j], loop[(j + 1) % loop.length])) {
+            ok = true;
+            break outer;
+          }
+        }
+      }
+    }
+    if (ok) hit.add(m);
+  }
+  return hit;
+}
+
 /// 射線法點在多邊形內判定。
 bool pointInPolygon(Offset p, List<Offset> loop) {
   var inside = false;
@@ -730,6 +767,8 @@ Future<ui.Picture> paintBgToPicture({
 /// [groups] 以 (頁, 層) 分組；繪製順序：底圖 → 層由底到頂，每層內螢光筆墊底。
 /// [byPage] 為頁內座標筆畫，[origin] 把頁內座標平移到堆疊座標（紙筆記第 i 頁平移
 /// (0, top(i)-24)，無限畫布恆零）。螢光筆依然全部墊底。
+/// [images]/[noteImages] 按層交錯（同層筆跡蓋圖，上層一切蓋下層一切）；
+/// [hiddenLayers] 的圖不畫。
 /// [includeBackgrounds] 顯示分層時傳 false（底圖另成一張走 [paintBgToPicture]）；
 /// 匯出/縮圖合成保持預設 true。
 Future<ui.Picture> paintPagesToPicture(
@@ -737,6 +776,9 @@ Future<ui.Picture> paintPagesToPicture(
   Offset Function(int page) origin, {
   double hlWidth = 3.0,
   StrokeParams? params,
+  List<NoteImage> images = const [],
+  Map<String, ui.Image>? noteImages,
+  List<int> hiddenLayers = const [],
   Map<int, ui.Image>? backgrounds,
   Rect? Function(int page)? bgRectOf,
   bool includeBackgrounds = true,
@@ -754,14 +796,48 @@ Future<ui.Picture> paintPagesToPicture(
       final l = a.layer.compareTo(b.layer);
       return l != 0 ? l : a.page.compareTo(b.page);
     });
-  // 先畫所有組的螢光（墊底），再畫其餘
-  for (final passHl in [true, false]) {
+  // 圖層交錯：螢光全局墊底；每層先圖後筆（同層筆跡蓋圖，上層一切蓋下層一切）。
+  final layers = <int>{};
+  for (final k in keys) {
+    layers.add(k.layer);
+  }
+  for (final m in images) {
+    layers.add(m.layer);
+  }
+  final ordered = layers.toList()..sort();
+  for (final k in keys) {
+    canvas.save();
+    canvas.translate(origin(k.page).dx, origin(k.page).dy);
+    for (final s in groups[k]!) {
+      if (PenTypeLabel.parse(s.type) == PenType.highlighter) {
+        paintStroke(canvas, s, hlWidth: hlWidth, params: params);
+      }
+    }
+    canvas.restore();
+  }
+  for (final layer in ordered) {
+    // 該層圖片（逐頁平移；隱藏層/缺圖/越界頁跳過）
+    for (final m in images) {
+      if (m.layer != layer || hiddenLayers.contains(m.layer)) continue;
+      final img = noteImages?[m.id];
+      if (img == null || m.w <= 0 || m.h <= 0) continue;
+      canvas.save();
+      final o = origin(m.page);
+      canvas.translate(o.dx, o.dy);
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(m.x, m.y, m.w, m.h),
+        Paint(),
+      );
+      canvas.restore();
+    }
     for (final k in keys) {
+      if (k.layer != layer) continue;
       canvas.save();
       canvas.translate(origin(k.page).dx, origin(k.page).dy);
       for (final s in groups[k]!) {
-        final isHl = PenTypeLabel.parse(s.type) == PenType.highlighter;
-        if (isHl == passHl) {
+        if (PenTypeLabel.parse(s.type) != PenType.highlighter) {
           paintStroke(canvas, s, hlWidth: hlWidth, params: params);
         }
       }
@@ -791,25 +867,80 @@ Future<ui.Picture> paintStrokesToPicture(
   ui.Size? logicalSize,
   double hlWidth = 3.0,
   StrokeParams? params,
+  List<NoteImage> images = const [],
+  Map<String, ui.Image>? noteImages,
+  List<int> hiddenLayers = const [],
 }) async {
   final rec = ui.PictureRecorder();
   final canvas = ui.Canvas(rec);
-  paintStrokesLayered(canvas, strokes, hlWidth: hlWidth, params: params);
+  paintStrokesLayered(canvas, strokes,
+      hlWidth: hlWidth,
+      params: params,
+      images: images,
+      noteImages: noteImages,
+      hiddenLayers: hiddenLayers);
   return rec.endRecording();
 }
 
 /// 螢光先畫、其餘後畫（縮圖 / PDF / 快取共用）。
 /// [hlWidth] 為螢光筆寬度倍數（相對 s.size）。
+/// [images]/[noteImages]：貼圖按圖層交錯——同層筆跡蓋圖，上層一切蓋下層一切
+/// （圖能蓋住下面圖層的筆跡）；[hiddenLayers] 的圖不畫。不傳 = 無圖，行為不變。
 void paintStrokesLayered(ui.Canvas canvas, List<Stroke> strokes,
-    {double hlWidth = 3.0, StrokeParams? params}) {
+    {double hlWidth = 3.0,
+    StrokeParams? params,
+    List<NoteImage> images = const [],
+    Map<String, ui.Image>? noteImages,
+    List<int> hiddenLayers = const []}) {
+  final layers = <int>{};
+  for (final s in strokes) {
+    layers.add(s.layer);
+  }
+  for (final m in images) {
+    layers.add(m.layer);
+  }
+  final ordered = layers.toList()..sort();
   for (final s in strokes) {
     if (PenTypeLabel.parse(s.type) == PenType.highlighter) {
       paintStroke(canvas, s, hlWidth: hlWidth, params: params);
     }
   }
-  for (final s in strokes) {
-    if (PenTypeLabel.parse(s.type) != PenType.highlighter) {
-      paintStroke(canvas, s, hlWidth: hlWidth, params: params);
+  // 每層先圖後筆（同層筆跡蓋圖，上層一切蓋下層一切）
+  for (final layer in ordered) {
+    paintImagesOfLayers(
+        canvas, [layer], images, noteImages, hiddenLayers, null);
+    for (final s in strokes) {
+      if (s.layer != layer) continue;
+      if (PenTypeLabel.parse(s.type) != PenType.highlighter) {
+        paintStroke(canvas, s, hlWidth: hlWidth, params: params);
+      }
+    }
+  }
+}
+
+/// 按層畫貼圖：[origins] 為頁→堆疊偏移（null = 無限畫布，頁內即堆疊；
+/// 回傳 null = 越界頁跳過）。缺解碼圖/尺寸非法/隱藏層跳過。
+void paintImagesOfLayers(
+    ui.Canvas canvas,
+    List<int> orderedLayers,
+    List<NoteImage> images,
+    Map<String, ui.Image>? noteImages,
+    List<int> hiddenLayers,
+    Offset? Function(int page)? origins) {
+  if (noteImages == null || images.isEmpty) return;
+  for (final layer in orderedLayers) {
+    for (final m in images) {
+      if (m.layer != layer || hiddenLayers.contains(m.layer)) continue;
+      final img = noteImages[m.id];
+      if (img == null || m.w <= 0 || m.h <= 0) continue;
+      final o = origins == null ? const Offset(0, 0) : origins(m.page);
+      if (o == null) continue; // 越界頁
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h),
+        Paint(),
+      );
     }
   }
 }

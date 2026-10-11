@@ -196,7 +196,8 @@ class PageBg {
 
 /// 貼上/插入的圖片：頁內左上 (x, y)＋尺寸 (w, h)，PNG 存同目錄
 /// `{basename}_img{id}.png`（見 NoteStore.saveImage）。
-/// 顯示在 PDF 底圖之上、筆跡之下（可直接在圖上批註；橡皮/圈選不碰圖片）。
+/// 顯示在 PDF 底圖之上；圖層與筆跡一起排（同層筆跡蓋圖，上層一切蓋下層一切，
+/// 故圖能蓋住下面圖層的筆跡；橡皮/圈選筆跡不碰圖片，但圈選可框住圖片一起操作）。
 class NoteImage {
   final String id; // Note.newId()，hex，檔名安全
   final int page; // 所在頁（0 起）
@@ -204,6 +205,8 @@ class NoteImage {
   final double y;
   final double w;
   final double h;
+  /// 所在圖層（0 起，0 最底；與 Stroke.layer 同序）。
+  final int layer;
 
   const NoteImage({
     required this.id,
@@ -212,6 +215,7 @@ class NoteImage {
     required this.y,
     required this.w,
     required this.h,
+    this.layer = 0,
   });
 
   Map<String, dynamic> toJson() => {
@@ -221,6 +225,7 @@ class NoteImage {
         'y': y,
         'w': w,
         'h': h,
+        'layer': layer,
       };
 
   factory NoteImage.fromJson(Map<String, dynamic> json) => NoteImage(
@@ -230,10 +235,17 @@ class NoteImage {
         y: (json['y'] as num).toDouble(),
         w: (json['w'] as num).toDouble(),
         h: (json['h'] as num).toDouble(),
+        layer: (json['layer'] as num?)?.toInt() ?? 0,
       );
 
   NoteImage copyWith(
-          {String? id, int? page, double? x, double? y, double? w, double? h}) =>
+          {String? id,
+          int? page,
+          double? x,
+          double? y,
+          double? w,
+          double? h,
+          int? layer}) =>
       NoteImage(
         id: id ?? this.id,
         page: page ?? this.page,
@@ -241,6 +253,7 @@ class NoteImage {
         y: y ?? this.y,
         w: w ?? this.w,
         h: h ?? this.h,
+        layer: layer ?? this.layer,
       );
 
   /// 整圖平移（頁內座標）。

@@ -86,6 +86,8 @@ class InkCanvas extends StatefulWidget {
   final void Function(String id, double x, double y, double w, double h)
       onImageChanged;
   final VoidCallback onImageDragEnd;
+  /// 圈選中的圖片 ids（editor 持有，只畫框；拖動只認內部單選）。
+  final Set<String> selectedImageIds;
   /// 像素橡皮半徑 / 按筆畫橡皮命中閾值 / 螢光筆寬度倍數與透明度。
   final double pixelRadius;
   final double strokeThreshold;
@@ -111,6 +113,7 @@ class InkCanvas extends StatefulWidget {
     required this.onImageDragStart,
     required this.onImageChanged,
     required this.onImageDragEnd,
+    this.selectedImageIds = const {},
     required this.panOffset,
     required this.scale,
     required this.onPanUpdate,
@@ -318,7 +321,7 @@ class InkCanvasState extends State<InkCanvas> {
     return null;
   }
 
-  /// 命中圖片（堆疊座標；倒序，頂層優先；越界頁跳過）。
+  /// 命中圖片（堆疊座標；倒序，頂層優先；越界頁/隱藏層跳過）。
   String? _hitImage(Offset stacked) {
     for (var i = widget.images.length - 1; i >= 0; i--) {
       final m = widget.images[i];
@@ -327,6 +330,7 @@ class InkCanvasState extends State<InkCanvas> {
               m.page >= widget.pageRects.length)) {
         continue;
       }
+      if (widget.hiddenLayers.contains(m.layer)) continue;
       if (m.contains(_localOf(stacked, m.page))) return m.id;
     }
     return null;
@@ -403,7 +407,11 @@ class InkCanvasState extends State<InkCanvas> {
           .where((s) => !widget.hiddenLayers.contains(s.layer))
           .toList();
       pic = await paintStrokesToPicture(strokes,
-          hlWidth: widget.hlWidth, params: widget.params);
+          hlWidth: widget.hlWidth,
+          params: widget.params,
+          images: widget.images,
+          noteImages: _noteImgs,
+          hiddenLayers: widget.hiddenLayers);
     } else {
       final groups = <PageLayer, List<Stroke>>{};
       for (final s in widget.strokes) {
@@ -427,6 +435,9 @@ class InkCanvasState extends State<InkCanvas> {
       pic = await paintPagesToPicture(groups, origin,
           hlWidth: widget.hlWidth,
           params: widget.params,
+          images: widget.images,
+          noteImages: _noteImgs,
+          hiddenLayers: widget.hiddenLayers,
           includeBackgrounds: false);
     }
     if (!mounted || gen != _picGen) {
@@ -1238,8 +1249,8 @@ class InkCanvasState extends State<InkCanvas> {
             rotateHandle: _rotateHandle(),
             rotateCenter: _stackedBounds()?.center,
             images: widget.images,
-            noteImages: _noteImgs,
             selectedImageId: _selectedImageId,
+            selectedImageIds: widget.selectedImageIds,
           ),
           size: Size.infinite,
         ),
@@ -1273,11 +1284,11 @@ class _InkPainter extends CustomPainter {
   /// 旋轉手柄（堆疊座標，轉動中會繞中心公轉）及其中心。
   final Offset? rotateHandle;
   final Offset? rotateCenter;
-  /// 貼圖：meta（頁內座標）＋解碼圖（id → 圖）。畫在底圖之後、筆跡之前。
+  /// 貼圖 meta（選中框定位用；圖本身已烘進 completed）。
   final List<NoteImage> images;
-  final Map<String, ui.Image> noteImages;
-  /// 已選中圖片 id（虛線框＋右下縮放手柄）。
+  /// 已選中圖片 id（單選拖動用，虛線框＋右下縮放手柄）與圈選集合（只畫框）。
   final String? selectedImageId;
+  final Set<String> selectedImageIds;
 
   _InkPainter({
     this.bg,
@@ -1302,8 +1313,8 @@ class _InkPainter extends CustomPainter {
     required this.rotateHandle,
     required this.rotateCenter,
     required this.images,
-    required this.noteImages,
     required this.selectedImageId,
+    required this.selectedImageIds,
   });
 
   /// 頁內座標平移到堆疊座標。
@@ -1333,21 +1344,10 @@ class _InkPainter extends CustomPainter {
           ..style = PaintingStyle.stroke,
       );
     }
-    // 已完成：先底圖層，後筆跡層（分開烘焙，不得每幀重繪全部）
+    // 已完成：先底圖層，後筆跡層＋貼圖層（分開烘焙，不得每幀重繪全部；
+    // 貼圖已按圖層烘進 completed，這裡只畫選中框）
     final bgPic = bg;
     if (bgPic != null) canvas.drawPicture(bgPic);
-    // 貼圖即時層：底圖之上、筆跡之下（拖動跟手，每幀現畫）
-    for (final m in images) {
-      final img = noteImages[m.id];
-      if (img == null || m.w <= 0 || m.h <= 0) continue;
-      final o = _shift(Offset.zero, m.page);
-      canvas.drawImageRect(
-        img,
-        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
-        Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h),
-        Paint(),
-      );
-    }
     final pic = completed;
     if (pic != null) canvas.drawPicture(pic);
     // 停頓預覽：藏原軌跡，直接畫預測形狀（頁內 → 堆疊）
@@ -1420,16 +1420,11 @@ class _InkPainter extends CustomPainter {
         );
       }
     }
-    // 選中圖片的虛線框＋右下縮放手柄（堆疊座標，直接畫）
-    NoteImage? selImg;
+    // 選中圖片的虛線框（單選另帶右下縮放手柄；堆疊座標，直接畫）
     for (final m in images) {
-      if (m.id == selectedImageId) {
-        selImg = m;
-        break;
-      }
-    }
-    if (selImg != null) {
-      final m = selImg;
+      final isSel =
+          m.id == selectedImageId || selectedImageIds.contains(m.id);
+      if (!isSel) continue;
       final o = _shift(Offset.zero, m.page);
       final box = Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h);
       _paintDashedLoop(canvas, [
@@ -1439,6 +1434,7 @@ class _InkPainter extends CustomPainter {
         box.bottomLeft,
         box.topLeft,
       ], const Color(0xFF3B5BFD));
+      if (m.id != selectedImageId) continue;
       final handle = box.bottomRight;
       canvas.drawCircle(
         handle,

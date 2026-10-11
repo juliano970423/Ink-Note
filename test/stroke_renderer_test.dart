@@ -389,4 +389,35 @@ void main() {
     expect(hitStroke(s, const Offset(50, 5)), isTrue);
     expect(hitStroke(s, const Offset(50, 50)), isFalse);
   });
+
+  test('圈選命中圖片：角在圈內/邊相交中，圈外不中', () {
+    const m = NoteImage(id: 'a', page: 0, x: 100, y: 100, w: 60, h: 40);
+    // 大圈全包
+    expect(
+        selectImages([m], const [
+          Offset(50, 50),
+          Offset(250, 50),
+          Offset(250, 250),
+          Offset(50, 250),
+        ]).length,
+        1);
+    // 遠處小圈不中
+    expect(
+        selectImages([m], const [
+          Offset(0, 0),
+          Offset(10, 0),
+          Offset(10, 10),
+          Offset(0, 10),
+        ]),
+        isEmpty);
+    // 圈邊穿圖而過（角全在外）也中
+    expect(
+        selectImages([m], const [
+          Offset(130, 0),
+          Offset(130, 300),
+          Offset(140, 300),
+          Offset(140, 0),
+        ]).length,
+        1);
+  });
 }

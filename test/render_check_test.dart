@@ -201,4 +201,56 @@ void main() {
     expect(r9, greaterThan(0));
     expect(r9, lessThan(r0));
   });
+
+  test('圖層交錯：上層圖蓋下層筆，同層筆蓋圖', () async {
+    // 10x10 紅塊當解碼圖
+    final rec = ui.PictureRecorder();
+    ui.Canvas(rec).drawRect(
+      const ui.Rect.fromLTWH(0, 0, 10, 10),
+      ui.Paint()..color = const ui.Color(0xFFFF0000),
+    );
+    final rp = rec.endRecording();
+    final red = await rp.toImage(10, 10);
+    rp.dispose();
+    Stroke pen(int layer) => Stroke(
+          color: '#000000',
+          size: 8.0,
+          points: [
+            for (var i = 0; i < 10; i++)
+              NotePoint(x: 20.0 + i * 18, y: 100, p: 1.0, t: i),
+          ],
+          type: 'brush',
+          layer: layer,
+        );
+    const meta =
+        NoteImage(id: 'g', page: 0, x: 60, y: 80, w: 80, h: 40, layer: 1);
+    Future<List<int>> pixel(Stroke s) async {
+      final pic = await paintStrokesToPicture([s],
+          images: const [meta], noteImages: {'g': red});
+      final img = await pic.toImage(200, 200);
+      final bytes = (await img.toByteData(
+              format: ui.ImageByteFormat.rawRgba))!
+          .buffer
+          .asUint8List();
+      final o = (100 * 200 + 100) * 4;
+      final px = [bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]];
+      img.dispose();
+      pic.dispose();
+      return px;
+    }
+
+    // 下層筆＋上層圖 → 圖蓋筆，(100,100) 紅
+    final p1 = await pixel(pen(0));
+    expect(p1[3], greaterThan(200));
+    expect(p1[0], greaterThan(200));
+    expect(p1[1], lessThan(80));
+    expect(p1[2], lessThan(80));
+    // 同層筆＋圖 → 筆後畫蓋圖，(100,100) 黑
+    final p2 = await pixel(pen(1));
+    expect(p2[3], greaterThan(200));
+    expect(p2[0], lessThan(128));
+    expect(p2[1], lessThan(128));
+    expect(p2[2], lessThan(128));
+    red.dispose();
+  });
 }

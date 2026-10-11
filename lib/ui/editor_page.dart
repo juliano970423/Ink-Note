@@ -111,8 +111,8 @@ class _EditorPageState extends State<EditorPage> {
   /// 貼圖解碼快取（id → 圖），即時層每幀現畫。
   Map<String, ui.Image> _noteImgs = {};
   Note? _imgNote;
-  /// 已選中圖片 id（圖片浮動操作條顯隱依據；與圈選互斥）。
-  String? _selectedImageId;
+  /// 已選中圖片 ids（tap 單選＋圈選多選；與圈選筆跡可共存，操作條共用）。
+  Set<String> _selectedImageIds = {};
   /// 圖片拖動會話（首個 changed 時 checkpoint，end 結算；一次拖抹一次 undo）。
   bool _imgSessionActive = false;
   bool _bgUpgrading = false;
@@ -206,7 +206,7 @@ class _EditorPageState extends State<EditorPage> {
       }
       _noteImgs = {};
       _imgNote = _note;
-      _selectedImageId = null;
+      _selectedImageIds = {};
     }
     for (final m in _note.images) {
       if (_noteImgs.containsKey(m.id)) continue;
@@ -456,6 +456,12 @@ class _EditorPageState extends State<EditorPage> {
                 .toList(),
             hlWidth: _hlWidth,
             params: _params,
+            images: [
+              for (final m in _note.images)
+                if (m.page == _pageIndex) m,
+            ],
+            noteImages: _noteImgs,
+            hiddenLayers: _note.hiddenLayers,
             bgImage: bg,
             bgRect: bgRect);
         if (png != null) {
@@ -1164,11 +1170,12 @@ class _EditorPageState extends State<EditorPage> {
       y: local.dy - h / 2,
       w: w,
       h: h,
+      layer: _activeLayer,
     );
     _checkpoint();
     setState(() {
       _note.images.add(meta);
-      _selectedImageId = meta.id;
+      _selectedImageIds = {meta.id};
     });
     try {
       await widget.repo.saveImage(_note.id, meta.id, pngBytes);
@@ -1176,7 +1183,7 @@ class _EditorPageState extends State<EditorPage> {
     if (!mounted) return;
     await _loadNoteImages();
     if (!mounted) return;
-    setState(() => _selectedImageId = meta.id);
+    setState(() => _selectedImageIds = {meta.id});
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
     _scheduleAutosave();
   }
@@ -1215,11 +1222,11 @@ class _EditorPageState extends State<EditorPage> {
     await _insertImage(b);
   }
 
-  /// 圖片選中變化（畫布 tap 回調；與圈選互斥）。
+  /// 圖片點選（畫布 tap 回調；先清圈選再單選，與圈選互斥）。
   void _onImageSelected(String? id) {
     setState(() {
-      _selectedImageId = id;
-      if (id != null) _deselect();
+      _deselect();
+      _selectedImageIds = id == null ? {} : {id};
     });
   }
 
@@ -1231,13 +1238,14 @@ class _EditorPageState extends State<EditorPage> {
     }
   }
 
-  /// 圖片拖動中：更新 meta（構造參數重建畫布，即時層跟手）。
+  /// 圖片拖動中：更新 meta（快取重建跟手，拖完 end 結算存檔）。
   void _onImageChanged(String id, double x, double y, double w, double h) {
     final i = _note.images.indexWhere((m) => m.id == id);
     if (i < 0) return;
     setState(() {
       _note.images[i] = _note.images[i].copyWith(x: x, y: y, w: w, h: h);
     });
+    _canvasKey.currentState?.invalidateCache();
   }
 
   /// 圖片拖動結束：結算存檔。
@@ -1247,53 +1255,66 @@ class _EditorPageState extends State<EditorPage> {
     _scheduleAutosave();
   }
 
-  /// 刪除選中圖片（PNG 文件保留供 undo，隨筆記刪除一起清）。
-  Future<void> _deleteImage() async {
-    final id = _selectedImageId;
-    if (id == null) return;
+  /// 刪除選中圖片（圖片操作條用；PNG 文件保留供 undo，隨筆記刪除一起清）。
+  Future<void> _deleteImages() async {
+    if (_selectedImageIds.isEmpty) return;
     _checkpoint();
-    _noteImgs.remove(id)?.dispose();
+    final ids = Set<String>.from(_selectedImageIds);
+    for (final id in ids) {
+      _noteImgs.remove(id)?.dispose();
+    }
     setState(() {
-      _note.images.removeWhere((m) => m.id == id);
-      _selectedImageId = null;
+      _note.images.removeWhere((m) => ids.contains(m.id));
+      _selectedImageIds = {};
     });
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
     _scheduleAutosave();
   }
 
-  /// 已選中圖片的堆疊矩形（操作條定位用；越界/無選中返回 null）。
+  /// 已選中圖片的堆疊聯合包圍盒（操作條定位用；無選中/越界返回 null）。
   Rect? _selectedImageStacked() {
-    final id = _selectedImageId;
-    if (id == null) return null;
+    if (_selectedImageIds.isEmpty) return null;
+    double? lx0, ly0, lx1, ly1;
     for (final m in _note.images) {
-      if (m.id != id) continue;
+      if (!_selectedImageIds.contains(m.id)) continue;
       if (m.page < 0 ||
           (_pageRects.isNotEmpty && m.page >= _pageRects.length)) {
-        return null;
+        continue;
       }
       final dy =
           _pageRects.isEmpty ? 0.0 : _pageRects[m.page].top - 24;
-      return Rect.fromLTWH(m.x, m.y + dy, m.w, m.h);
+      lx0 = lx0 == null ? m.x : min(lx0, m.x);
+      ly0 = ly0 == null ? m.y + dy : min(ly0, m.y + dy);
+      lx1 = lx1 == null ? m.x + m.w : max(lx1, m.x + m.w);
+      ly1 = ly1 == null ? m.y + dy + m.h : max(ly1, m.y + dy + m.h);
     }
-    return null;
+    if (lx0 == null || ly0 == null || lx1 == null || ly1 == null) return null;
+    return Rect.fromLTRB(lx0, ly0, lx1, ly1);
   }
 
   // ---------- 圈選 ----------
   void _clearSelection() {
     _selected = {};
+    _selectedImageIds = {};
   }
 
   void _pruneSelection() {
     _selected.removeWhere((s) =>
         !_note.strokes.contains(s) ||
         _note.hiddenLayers.contains(s.layer));
+    _selectedImageIds.removeWhere((id) =>
+        !_note.images.any((m) => m.id == id) ||
+        _note.hiddenLayers.contains(
+            _note.images.firstWhere((m) => m.id == id).layer));
   }
 
   void _onLassoCompleted(List<Offset> loop, int page) {
     // 選筆用頁內座標算（虛線框直接按包圍盒畫，不存套索路徑）；
     // 隱藏圖層不圈。舊選區先結算（出紙裁掉）再換新。
+    // 同圈圖片一起選中（可與筆跡共存，移動/旋轉/複製/刪除一起走）。
     var clipped = false;
     late List<Stroke> hits;
+    late Set<String> imgHits;
     setState(() {
       clipped = _clipDeselected();
       _moveArmed = false;
@@ -1309,10 +1330,17 @@ class _EditorPageState extends State<EditorPage> {
                   s.page == page && !_note.hiddenLayers.contains(s.layer))
               .toList(),
           local);
-      if (hits.isEmpty) {
+      imgHits = selectImages(
+          _note.images
+              .where((m) =>
+                  m.page == page && !_note.hiddenLayers.contains(m.layer))
+              .toList(),
+          local).map((m) => m.id).toSet();
+      if (hits.isEmpty && imgHits.isEmpty) {
         _clearSelection();
       } else {
         _selected = hits.toSet();
+        _selectedImageIds = imgHits;
         _selectionPage = page;
       }
     });
@@ -1323,13 +1351,13 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   void _onSelectionMove(Offset delta) {
-    if (_selected.isEmpty) return;
+    if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
     if (!_moveArmed) {
       _checkpoint();
       _moveArmed = true;
     }
     // 拖曳中不裁紙（路過不算數）；放開才在 onSelectionEnd 結算。
-    // moved() 產生新實例，集合跟著換新實例。
+    // moved() 產生新實例，集合跟著換新實例。圖片同向平移（頁內增量＝堆疊增量）。
     final moved = <Stroke>{};
     final next = <Stroke>[];
     for (final s in _note.strokes) {
@@ -1344,6 +1372,10 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       _note.strokes = next;
       _selected = moved;
+      _note.images = [
+        for (final m in _note.images)
+          _selectedImageIds.contains(m.id) ? m.moved(delta) : m,
+      ];
     });
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
@@ -1351,8 +1383,9 @@ class _EditorPageState extends State<EditorPage> {
 
   /// 圈選旋轉：手柄拖動的角度增量（[center] 為堆疊座標）。
   /// 與移動同一個 undo 作用域（同一手勢只 checkpoint 一次）。
+  /// 圖片只轉中心（保持軸對齊，不轉內容）。
   void _onSelectionRotate(double dAngle, Offset center) {
-    if (_selected.isEmpty) return;
+    if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
     if (!_moveArmed) {
       _checkpoint();
       _moveArmed = true;
@@ -1375,9 +1408,25 @@ class _EditorPageState extends State<EditorPage> {
         next.add(s);
       }
     }
+    final c = cos(dAngle), sn = sin(dAngle);
+    Offset rot(Offset p) {
+      final dx = p.dx - cLocal.dx, dy = p.dy - cLocal.dy;
+      return Offset(
+          cLocal.dx + dx * c - dy * sn, cLocal.dy + dx * sn + dy * c);
+    }
     setState(() {
       _note.strokes = next;
       _selected = rotated;
+      _note.images = [
+        for (final m in _note.images)
+          if (!_selectedImageIds.contains(m.id))
+            m
+          else
+            () {
+              final nc = rot(Offset(m.x + m.w / 2, m.y + m.h / 2));
+              return m.copyWith(x: nc.dx - m.w / 2, y: nc.dy - m.h / 2);
+            }(),
+      ];
     });
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
@@ -1431,26 +1480,57 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   void _deleteSelection() {
-    if (_selected.isEmpty) return;
+    if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
     _checkpoint();
+    final imgIds = Set<String>.from(_selectedImageIds);
+    for (final id in imgIds) {
+      _noteImgs.remove(id)?.dispose();
+    }
     setState(() {
       _note.strokes.removeWhere((s) => _selected.contains(s));
+      _note.images.removeWhere((m) => imgIds.contains(m.id));
       _clearSelection();
     });
+    _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
 
-  /// 複製選中（偏移一小段，原選區移到複件上）。
-  void _duplicateSelection() {
-    if (_selected.isEmpty) return;
+  /// 複製選中（偏移一小段，原選區移到複件上；圖片複件新 id＋複製 PNG）。
+  Future<void> _duplicateSelection() async {
+    if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
     _checkpoint();
     const by = Offset(24, 24);
     final copies = _selected.map((s) => s.moved(by)).toList();
+    final imgCopies = <NoteImage>[];
+    for (final m in _note.images) {
+      if (!_selectedImageIds.contains(m.id)) continue;
+      Uint8List? bytes;
+      try {
+        bytes = await widget.repo.loadImage(_note.id, m.id);
+      } catch (_) {}
+      if (bytes == null) continue; // PNG 丟了：只複筆跡，跳過該圖
+      final nm = NoteImage(
+        id: Note.newId(),
+        page: m.page,
+        x: m.x + by.dx,
+        y: m.y + by.dy,
+        w: m.w,
+        h: m.h,
+        layer: m.layer,
+      );
+      try {
+        await widget.repo.saveImage(_note.id, nm.id, bytes);
+      } catch (_) {}
+      imgCopies.add(nm);
+    }
     setState(() {
       _note.strokes.addAll(copies);
       _selected = copies.toSet();
+      _note.images.addAll(imgCopies);
+      _selectedImageIds = imgCopies.map((m) => m.id).toSet();
     });
+    await _loadNoteImages();
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
@@ -1545,6 +1625,15 @@ class _EditorPageState extends State<EditorPage> {
         }
       }
       _note.strokes = next;
+      _note.images = [
+        for (final m in _note.images)
+          if (m.layer == i)
+            m.copyWith(layer: i - 1)
+          else if (m.layer > i)
+            m.copyWith(layer: m.layer - 1)
+          else
+            m,
+      ];
       _note.layerNames.removeAt(i);
       _note.hiddenLayers = _remapHidden(i);
       if (_activeLayer == i) {
@@ -1565,11 +1654,16 @@ class _EditorPageState extends State<EditorPage> {
     _checkpoint();
     setState(() {
       _note.strokes.removeWhere((s) => s.layer == i);
+      _note.images.removeWhere((m) => m.layer == i);
       final next = <Stroke>[];
       for (final s in _note.strokes) {
         next.add(s.layer > i ? s.copyWith(layer: s.layer - 1) : s);
       }
       _note.strokes = next;
+      _note.images = [
+        for (final m in _note.images)
+          m.layer > i ? m.copyWith(layer: m.layer - 1) : m,
+      ];
       _note.layerNames.removeAt(i);
       _note.hiddenLayers = _remapHidden(i);
       if (_activeLayer > i) {
@@ -1593,6 +1687,9 @@ class _EditorPageState extends State<EditorPage> {
       final name = _note.layerNames[keep];
       _note.strokes = [
         for (final s in _note.strokes) s.copyWith(layer: keep),
+      ];
+      _note.images = [
+        for (final m in _note.images) m.copyWith(layer: keep),
       ];
       _note.layerNames = [name];
       _note.hiddenLayers = [];
@@ -2022,6 +2119,7 @@ class _EditorPageState extends State<EditorPage> {
                   onImageDragStart: _onImageDragStart,
                   onImageChanged: _onImageChanged,
                   onImageDragEnd: _onImageDragEnd,
+                  selectedImageIds: _selectedImageIds,
                   panOffset: _panOffset,
                   scale: _scale,
                   onPanUpdate: _onPanUpdate,
@@ -2117,13 +2215,13 @@ class _EditorPageState extends State<EditorPage> {
                     IconButton(
                       icon: const Icon(Icons.delete_outline),
                       tooltip: '刪除圖片',
-                      onPressed: _deleteImage,
+                      onPressed: _deleteImages,
                     ),
                     IconButton(
                       icon: const Icon(Icons.close),
                       tooltip: '取消選擇',
                       onPressed: () => setState(() {
-                        _selectedImageId = null;
+                        _selectedImageIds = {};
                         _canvasKey.currentState?.deselectImage();
                       }),
                     ),
@@ -2725,6 +2823,9 @@ Future<Uint8List?> renderThumbnail(List<Stroke> strokes,
     {double maxWidth = 240,
     double hlWidth = 3.0,
     StrokeParams? params,
+    List<NoteImage> images = const [],
+    Map<String, ui.Image>? noteImages,
+    List<int> hiddenLayers = const [],
     ui.Image? bgImage,
     Rect? bgRect}) async {
   ui.Image? bg = bgImage;
@@ -2770,7 +2871,12 @@ Future<Uint8List?> renderThumbnail(List<Stroke> strokes,
       ui.Paint(),
     );
   }
-  paintStrokesLayered(canvas, strokes, hlWidth: hlWidth, params: params);
+  paintStrokesLayered(canvas, strokes,
+      hlWidth: hlWidth,
+      params: params,
+      images: images,
+      noteImages: noteImages,
+      hiddenLayers: hiddenLayers);
   final pic = rec.endRecording();
   final img = await pic.toImage(
       (w * scale).round().clamp(1, 1024), (h * scale).round().clamp(1, 1024));
