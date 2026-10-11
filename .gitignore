@@ -44,5 +44,5 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Playwright 驗證殘留（截圖/snapshot，用完即刪，不進版控）
+# Playwright verification leftovers (screenshots/snapshots, not for commit)
 .playwright-mcp/
