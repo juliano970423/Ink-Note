@@ -12,6 +12,7 @@ class MemoryNoteStore implements NoteStore {
   final Map<String, Uint8List> _thumbs = {};
   final Map<String, Map<String, Uint8List>> _backgrounds = {};
   final Map<String, Uint8List> _originalPdfs = {};
+  final Map<String, Map<String, Uint8List>> _images = {};
 
   @override
   Future<void> save(Note note) async {
@@ -95,11 +96,27 @@ class MemoryNoteStore implements NoteStore {
   }
 
   @override
+  Future<Uint8List?> loadImage(String noteId, String imageId) async =>
+      _images[noteId]?[imageId];
+
+  @override
+  Future<void> saveImage(
+      String noteId, String imageId, List<int> pngBytes) async {
+    (_images[noteId] ??= {})[imageId] = Uint8List.fromList(pngBytes);
+  }
+
+  @override
+  Future<void> deleteImage(String noteId, String imageId) async {
+    _images[noteId]?.remove(imageId);
+  }
+
+  @override
   Future<void> delete(String id) async {
     _notes.remove(id);
     _thumbs.remove(id);
     _backgrounds.remove(id);
     _originalPdfs.remove(id);
+    _images.remove(id);
   }
 
   @override

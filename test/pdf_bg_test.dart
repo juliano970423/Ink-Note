@@ -315,6 +315,10 @@ void main() {
           onStrokeEraseEnd: () {},
           onPixelEraseTick: (_, _) {},
           onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -429,6 +433,10 @@ void main() {
           onStrokeEraseEnd: () {},
           onPixelEraseTick: (_, _) {},
           onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -486,6 +494,10 @@ void main() {
           onStrokeEraseEnd: () {},
           onPixelEraseTick: (_, _) {},
           onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -555,6 +567,10 @@ void main() {
           onStrokeEraseEnd: () {},
           onPixelEraseTick: (_, _) {},
           onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -610,6 +626,10 @@ void main() {
           onStrokeEraseEnd: () {},
           onPixelEraseTick: (_, _) {},
           onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -667,6 +687,10 @@ void main() {
           onStrokeEraseEnd: () {},
           onPixelEraseTick: (_, _) {},
           onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -725,8 +749,7 @@ void main() {
     expect(() => pageBoxMetas(Uint8List.fromList([1, 2, 3])), throwsA(anything));
   });
 
-  testWidgets('pixel eraser ticks during drag (real-time)', (tester) async {
-    var ticks = 0, ends = 0;
+  testWidgets('pixel eraser ticks during drag (real-time)', (tester) async {    var ticks = 0, ends = 0;
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: InkCanvas(
@@ -751,6 +774,10 @@ void main() {
           onPixelEraseEnd: () {
             ends++;
           },
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
           panOffset: Offset.zero,
           scale: 1.0,
           onPanUpdate: (_) {},
@@ -776,5 +803,107 @@ void main() {
     await g.up();
     await tester.pump();
     expect(ends, 1);
+  });
+
+  testWidgets('note image: tap selects, drag moves, handle resizes',
+      (tester) async {
+    String? selected;
+    var starts = 0, ends = 0;
+    final changed = <List<double>>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (id) {
+            selected = id;
+          },
+          onImageDragStart: () {
+            starts++;
+          },
+          onImageChanged: (id, x, y, w, h) {
+            changed.add([x, y, w, h]);
+          },
+          onImageDragEnd: () {
+            ends++;
+          },
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 解碼圖推給畫布（10x10 紅塊；顯示不需要，交互/命中走 meta）
+    final rec = ui.PictureRecorder();
+    ui.Canvas(rec).drawRect(
+      const ui.Rect.fromLTWH(0, 0, 10, 10),
+      ui.Paint()..color = const ui.Color(0xFFFF0000),
+    );
+    final pic = rec.endRecording();
+    final img = await pic.toImage(10, 10);
+    pic.dispose();
+    tester.state<InkCanvasState>(find.byType(InkCanvas))
+        .setNoteImages({'im1': img});
+    await tester.pump();
+    // 點圖選中（純點選不調 drag start/end）
+    await tester.tapAt(const Offset(150, 150));
+    await tester.pump();
+    expect(selected, 'im1');
+    expect(starts, 0);
+    expect(ends, 0);
+    // 圖內拖動＝移動（首動調 start，changed 累加）
+    final g = await tester.startGesture(const Offset(150, 150));
+    await g.moveTo(const Offset(170, 160));
+    await tester.pump();
+    expect(starts, 1);
+    expect(changed.isNotEmpty, isTrue);
+    expect(changed.last[0], greaterThan(100));
+    expect(changed.last[1], greaterThan(100));
+    await g.up();
+    await tester.pump();
+    expect(ends, 1);
+    // 右下手柄拖＝等比縮放（測試直連畫布、meta 不回寫，手柄仍在初值 300,200）
+    final g2 = await tester.startGesture(const Offset(300, 200));
+    await g2.moveTo(const Offset(320, 220));
+    await tester.pump();
+    expect(changed.last[2], greaterThan(200));
+    expect(changed.last[3], greaterThan(100));
+    await g2.up();
+    await tester.pump();
+    expect(ends, 2);
+    // 點空白取消選中
+    await tester.tapAt(const Offset(500, 500));
+    await tester.pump();
+    expect(selected, isNull);
+    img.dispose();
   });
 }

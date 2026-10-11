@@ -325,6 +325,40 @@ class NoteRepository implements NoteStore {
     await tmp.rename(f.path);
   }
 
+  /// 貼上/插入的圖片：`{basename}_img{id}.png`（id 是 hex，檔名安全）。
+  Future<File> imageFileForId(String noteId, String imageId) async {
+    final f = await findNoteFile(noteId);
+    if (f == null) throw StateError('note not found: $noteId');
+    final safe = imageId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    return File(f.path.replaceAll(RegExp(r'\.json$'), '_img$safe.png'));
+  }
+
+  @override
+  Future<Uint8List?> loadImage(String noteId, String imageId) async {
+    try {
+      final f = await imageFileForId(noteId, imageId);
+      if (await f.exists()) return await f.readAsBytes();
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> saveImage(
+      String noteId, String imageId, List<int> pngBytes) async {
+    final f = await imageFileForId(noteId, imageId);
+    final tmp = File('${f.path}.tmp');
+    await tmp.writeAsBytes(pngBytes, flush: true);
+    await tmp.rename(f.path);
+  }
+
+  @override
+  Future<void> deleteImage(String noteId, String imageId) async {
+    try {
+      final f = await imageFileForId(noteId, imageId);
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+  }
+
   @override
   Future<void> delete(String id) async {
     final f = await findNoteFile(id);
@@ -335,11 +369,14 @@ class NoteRepository implements NoteStore {
       final orig = File(f.path.replaceAll(RegExp(r'\.json$'), '_orig.pdf'));
       if (await orig.exists()) await orig.delete();
       // 底圖按 key 存檔（`_bg*.png` 全刪；刪頁留下的孤兒文件在這裡一起清）
+      // 貼圖同理（`_img*.png` 全刪）
       final dir = f.parent;
       final base = f.uri.pathSegments.last.replaceAll(RegExp(r'\.json$'), '');
       await for (final e in dir.list()) {
         final name = e.uri.pathSegments.last;
-        if (name.startsWith('${base}_bg') && name.endsWith('.png')) {
+        if (name.endsWith('.png') &&
+            (name.startsWith('${base}_bg') ||
+                name.startsWith('${base}_img'))) {
           try {
             await e.delete();
           } catch (_) {}

@@ -49,4 +49,16 @@ void main() {
     await store.delete('a1b2');
     expect((await store.listAll()).isEmpty, isTrue);
   });
+
+  test('貼圖 PNG 存取刪＋刪筆記連帶清', () async {
+    await store.save(note('a1b2', 1));
+    expect(await store.loadImage('a1b2', 'im1'), isNull);
+    await store.saveImage('a1b2', 'im1', [7, 8, 9]);
+    expect(await store.loadImage('a1b2', 'im1'), [7, 8, 9]);
+    await store.deleteImage('a1b2', 'im1');
+    expect(await store.loadImage('a1b2', 'im1'), isNull);
+    await store.saveImage('a1b2', 'im1', [7, 8, 9]);
+    await store.delete('a1b2');
+    expect(await store.loadImage('a1b2', 'im1'), isNull);
+  });
 }

@@ -35,6 +35,13 @@ abstract class NoteStore {
 
   Future<void> saveOriginalPdf(String id, List<int> pdfBytes);
 
+  /// 貼上/插入的圖片 PNG（每圖一張，按圖片 id 存）；無圖返回 null。
+  Future<Uint8List?> loadImage(String noteId, String imageId);
+
+  Future<void> saveImage(String noteId, String imageId, List<int> pngBytes);
+
+  Future<void> deleteImage(String noteId, String imageId);
+
   Future<void> delete(String id);
 
   /// 列出所有資料夾名（已排序，不含根目錄）。

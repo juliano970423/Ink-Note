@@ -70,6 +70,22 @@ class InkCanvas extends StatefulWidget {
   final List<Rect> pageRects;
   /// 隱藏的圖層 id（不畫、不命中）。
   final List<int> hiddenLayers;
+  /// 貼圖：meta 列表（構造參數，editor setState 更新）＋解碼圖
+  /// （setNoteImages imperative＋clone 自持，仿底圖）。
+  /// 畫在底圖之上、筆跡之下（可直接在圖上批註；橡皮/圈選不碰圖片）。
+  /// 交互（筆工具下）：點圖選中，已選中圖上拖動＝移動，
+  /// 右下手柄拖＝等比縮放，點空白取消；想在圖上畫線先點空白取消選中。
+  /// 貼圖：meta 列表（構造參數，editor setState 更新）＋解碼圖
+  /// （setNoteImages imperative＋clone 自持，仿底圖）。
+  /// 畫在底圖之上、筆跡之下（可直接在圖上批註；橡皮/圈選不碰圖片）。
+  /// 交互（筆工具下）：點圖選中，已選中圖上拖動＝移動，
+  /// 右下手柄拖＝等比縮放，點空白取消；想在圖上畫線先點空白取消選中。
+  final List<NoteImage> images;
+  final void Function(String? id) onImageSelected;
+  final VoidCallback onImageDragStart;
+  final void Function(String id, double x, double y, double w, double h)
+      onImageChanged;
+  final VoidCallback onImageDragEnd;
   /// 像素橡皮半徑 / 按筆畫橡皮命中閾值 / 螢光筆寬度倍數與透明度。
   final double pixelRadius;
   final double strokeThreshold;
@@ -90,6 +106,11 @@ class InkCanvas extends StatefulWidget {
     required this.onStrokeEraseEnd,
     required this.onPixelEraseTick,
     required this.onPixelEraseEnd,
+    this.images = const [],
+    required this.onImageSelected,
+    required this.onImageDragStart,
+    required this.onImageChanged,
+    required this.onImageDragEnd,
     required this.panOffset,
     required this.scale,
     required this.onPanUpdate,
@@ -191,6 +212,16 @@ class InkCanvasState extends State<InkCanvas> {
   Offset? _lastLocal;
   // PDF 底圖（編輯器推送解碼好的圖，畫布 clone 自持，畫進快取最底層）
   Map<int, ui.Image> _bgImgs = {};
+  // 貼圖解碼圖（id → 圖；clone 自持＋隔代釋放，仿底圖）
+  Map<String, ui.Image> _noteImgs = {};
+  Map<String, ui.Image> _retiredNoteImgs = {};
+  // 圖片選中/拖動：選中 id、拖動所屬指針、是否手柄縮放、上次屏位置、
+  // 本次拖動是否已通知上層（首動才 checkpoint，純點選不留空 undo）
+  String? _selectedImageId;
+  int? _imgDragPointer;
+  bool _imgResizing = false;
+  Offset? _imgDragLast;
+  bool _imgDragStarted = false;
   // 上一代底圖 clone（隔代釋放，見 setBgImages）
   Map<int, ui.Image> _retiredBgImgs = {};
   // 橡皮會話：拖動中只累路徑+畫游標，放開才提交
@@ -250,6 +281,77 @@ class InkCanvasState extends State<InkCanvas> {
     _bgImgs = {for (final e in images.entries) e.key: e.value.clone()};
     _scheduleCompletedRebuild();
   }
+
+  /// 貼圖推送（editor 解碼好後調用；圖片走即時層，每幀現畫，
+  /// 拖動跟手，不進快取，故只 setState 不重建）。
+  void setNoteImages(Map<String, ui.Image> images) {
+    for (final v in _retiredNoteImgs.values) {
+      v.dispose();
+    }
+    _retiredNoteImgs = _noteImgs;
+    _noteImgs = {for (final e in images.entries) e.key: e.value.clone()};
+    // 選中圖若已不在列表（被刪），順手清選中
+    if (_selectedImageId != null &&
+        !widget.images.any((m) => m.id == _selectedImageId)) {
+      _selectedImageId = null;
+      _imgDragPointer = null;
+      _imgDragLast = null;
+      widget.onImageSelected(null);
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 頁內座標 → 堆疊座標（無限畫布恆等；有紙按頁頂偏移）。
+  Offset _stackedOfLocal(Offset local, int page) {
+    if (widget.pageRects.isEmpty) return local;
+    if (page < 0 || page >= widget.pageRects.length) return local;
+    return local + Offset(0, widget.pageRects[page].top - 24);
+  }
+
+  /// 已選中的圖 meta（不在列表就 null）。
+  NoteImage? _selectedMeta() {
+    final id = _selectedImageId;
+    if (id == null) return null;
+    for (final m in widget.images) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  /// 命中圖片（堆疊座標；倒序，頂層優先；越界頁跳過）。
+  String? _hitImage(Offset stacked) {
+    for (var i = widget.images.length - 1; i >= 0; i--) {
+      final m = widget.images[i];
+      if (m.page < 0 ||
+          (widget.pageRects.isNotEmpty &&
+              m.page >= widget.pageRects.length)) {
+        continue;
+      }
+      if (m.contains(_localOf(stacked, m.page))) return m.id;
+    }
+    return null;
+  }
+
+  /// 已選中圖的右下縮放手柄（堆疊座標）。
+  Offset? _imgHandleStacked() {
+    final m = _selectedMeta();
+    if (m == null) return null;
+    return _stackedOfLocal(Offset(m.x + m.w, m.y + m.h), m.page);
+  }
+
+  void _selectImage(String? id) {
+    if (_selectedImageId == id) return;
+    _selectedImageId = id;
+    _imgDragPointer = null;
+    _imgResizing = false;
+    _imgDragLast = null;
+    _imgDragStarted = false;
+    widget.onImageSelected(id);
+    if (mounted) setState(() {});
+  }
+
+  /// 對外清圖片選中（操作條取消鈕用；up 路徑點空白已自行處理）。
+  void deselectImage() => _selectImage(null);
 
   void _cancelDwell() {
     _dwellTimer?.cancel();
@@ -447,7 +549,8 @@ class InkCanvasState extends State<InkCanvas> {
     // 第二指按下 → 轉雙指平移/縮放，作廢進行中的筆畫與圈選路徑；
     // 但筆書寫中後落的手指是手掌：已 track（防 stale），不轉雙指不作廢
     if (_gestureCount() >= 2) {
-      if (_isPalmIntrusion(e)) return;      _twoFinger = true;
+      if (_isPalmIntrusion(e)) return;
+      _twoFinger = true;
       _twoStartMid = _midpoint();
       _twoStartTime = e.timeStamp;
       _live = null;
@@ -455,6 +558,14 @@ class InkCanvasState extends State<InkCanvas> {
       _movingSel = false;
       _rotating = false;
       _singlePanLast = null;
+      // 雙指打斷圖片拖（選中保留，只停跟手；殘留會話順手結算）
+      _imgDragPointer = null;
+      _imgResizing = false;
+      _imgDragLast = null;
+      if (_imgDragStarted) {
+        _imgDragStarted = false;
+        widget.onImageDragEnd();
+      }
       setState(() => _liveOutline = []);
       return;
     }
@@ -495,6 +606,34 @@ class InkCanvasState extends State<InkCanvas> {
     }
     if (!_acceptKind(e.kind)) return;
     final stacked = _content(e.localPosition);
+    // 貼圖操作（筆工具下；橡皮/圈選/唯讀走各自的分支出去了）：
+    // 右下手柄→等比縮放，已選中圖內→移動，未選中圖→選中，空白→取消選中。
+    // （想在圖上畫線：先點空白取消選中再畫。）
+    if (widget.tool == ToolMode.pen) {
+      final sel = _selectedMeta();
+      if (sel != null) {
+        final h = _imgHandleStacked();
+        if (h != null && (stacked - h).distance <= 22 / widget.scale) {
+          _imgDragPointer = e.pointer;
+          _imgResizing = true;
+          _imgDragLast = e.localPosition;
+          _imgDragStarted = false;
+          _primary = e.pointer;
+          return;
+        }
+      }
+      final hit = _hitImage(stacked);
+      if (hit != null) {
+        if (_selectedImageId != hit) _selectImage(hit);
+        _imgDragPointer = e.pointer;
+        _imgResizing = false;
+        _imgDragLast = e.localPosition;
+        _imgDragStarted = false;
+        _primary = e.pointer;
+        return;
+      }
+      if (_selectedImageId != null) _selectImage(null);
+    }
     // 橡皮：開會話，落筆點立即試刪（點按空白不留 checkpoint；可跨頁）
     if (widget.tool == ToolMode.strokeEraser ||
         widget.tool == ToolMode.pixelEraser) {
@@ -580,6 +719,32 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (_blockUntilLift) return;
+    // 圖片拖動/縮放中（僅所屬指針；增量是內容 px，meta 取最新值累加不丟幀）
+    if (_imgDragPointer != null &&
+        e.pointer == _imgDragPointer &&
+        _imgDragLast != null) {
+      final d = (e.localPosition - _imgDragLast!) / widget.scale;
+      _imgDragLast = e.localPosition;
+      final meta = _selectedMeta();
+      if (meta != null && (d.dx != 0 || d.dy != 0)) {
+        // 首動才通知上層 checkpoint（純點選不留空 undo）
+        if (!_imgDragStarted) {
+          _imgDragStarted = true;
+          widget.onImageDragStart();
+        }
+        if (_imgResizing) {
+          // 右下拖：按對角線增量等比（右/下為正＝放大）
+          final f = (1 + (d.dx + d.dy) / (meta.w + meta.h)).clamp(0.05, 8.0);
+          final r = meta.scaled(f);
+          widget.onImageChanged(meta.id, r.x, r.y, r.w, r.h);
+        } else {
+          widget.onImageChanged(
+              meta.id, meta.x + d.dx, meta.y + d.dy, meta.w, meta.h);
+        }
+        if (mounted) setState(() {});
+      }
+      return;
+    }
     if (!_active.containsKey(e.pointer)) return;
     _track(e.pointer, e.localPosition, e.kind, e.timeStamp);
     // 單指平移中（僅所屬指針）
@@ -835,6 +1000,17 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (_active.isEmpty) _blockUntilLift = false;
+    // 圖片拖動結束（僅所屬指針）：選中保留；沒動過只清狀態不結算
+    if (_imgDragPointer != null && e.pointer == _imgDragPointer) {
+      final wasStarted = _imgDragStarted;
+      _imgDragPointer = null;
+      _imgResizing = false;
+      _imgDragLast = null;
+      _imgDragStarted = false;
+      if (_primary == e.pointer) _primary = null;
+      if (wasStarted) widget.onImageDragEnd();
+      return;
+    }
     if (_singlePanLast != null) {
       // 單指平移抬起：無後續動作（位移已在 move 裡結清）
       _singlePanLast = null;
@@ -967,6 +1143,15 @@ class InkCanvasState extends State<InkCanvas> {
         widget.onStrokeEraseEnd();
       }
     }
+    // 圖片拖動被取消：停跟手，動過才結算（選中保留）
+    if (_imgDragPointer != null && e.pointer == _imgDragPointer) {
+      final wasStarted = _imgDragStarted;
+      _imgDragPointer = null;
+      _imgResizing = false;
+      _imgDragLast = null;
+      _imgDragStarted = false;
+      if (wasStarted) widget.onImageDragEnd();
+    }
     if (_active.isEmpty) _blockUntilLift = false;
     _live = null;
     _lassoPath = [];
@@ -1004,6 +1189,12 @@ class InkCanvasState extends State<InkCanvas> {
       v.dispose();
     }
     for (final v in _retiredBgImgs.values) {
+      v.dispose();
+    }
+    for (final v in _noteImgs.values) {
+      v.dispose();
+    }
+    for (final v in _retiredNoteImgs.values) {
       v.dispose();
     }
     super.dispose();
@@ -1046,6 +1237,9 @@ class InkCanvasState extends State<InkCanvas> {
             selectionRect: widget.selectionRect,
             rotateHandle: _rotateHandle(),
             rotateCenter: _stackedBounds()?.center,
+            images: widget.images,
+            noteImages: _noteImgs,
+            selectedImageId: _selectedImageId,
           ),
           size: Size.infinite,
         ),
@@ -1079,6 +1273,11 @@ class _InkPainter extends CustomPainter {
   /// 旋轉手柄（堆疊座標，轉動中會繞中心公轉）及其中心。
   final Offset? rotateHandle;
   final Offset? rotateCenter;
+  /// 貼圖：meta（頁內座標）＋解碼圖（id → 圖）。畫在底圖之後、筆跡之前。
+  final List<NoteImage> images;
+  final Map<String, ui.Image> noteImages;
+  /// 已選中圖片 id（虛線框＋右下縮放手柄）。
+  final String? selectedImageId;
 
   _InkPainter({
     this.bg,
@@ -1102,6 +1301,9 @@ class _InkPainter extends CustomPainter {
     required this.selectionRect,
     required this.rotateHandle,
     required this.rotateCenter,
+    required this.images,
+    required this.noteImages,
+    required this.selectedImageId,
   });
 
   /// 頁內座標平移到堆疊座標。
@@ -1134,6 +1336,18 @@ class _InkPainter extends CustomPainter {
     // 已完成：先底圖層，後筆跡層（分開烘焙，不得每幀重繪全部）
     final bgPic = bg;
     if (bgPic != null) canvas.drawPicture(bgPic);
+    // 貼圖即時層：底圖之上、筆跡之下（拖動跟手，每幀現畫）
+    for (final m in images) {
+      final img = noteImages[m.id];
+      if (img == null || m.w <= 0 || m.h <= 0) continue;
+      final o = _shift(Offset.zero, m.page);
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h),
+        Paint(),
+      );
+    }
     final pic = completed;
     if (pic != null) canvas.drawPicture(pic);
     // 停頓預覽：藏原軌跡，直接畫預測形狀（頁內 → 堆疊）
@@ -1205,6 +1419,40 @@ class _InkPainter extends CustomPainter {
             ..strokeCap = StrokeCap.round,
         );
       }
+    }
+    // 選中圖片的虛線框＋右下縮放手柄（堆疊座標，直接畫）
+    NoteImage? selImg;
+    for (final m in images) {
+      if (m.id == selectedImageId) {
+        selImg = m;
+        break;
+      }
+    }
+    if (selImg != null) {
+      final m = selImg;
+      final o = _shift(Offset.zero, m.page);
+      final box = Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h);
+      _paintDashedLoop(canvas, [
+        box.topLeft,
+        box.topRight,
+        box.bottomRight,
+        box.bottomLeft,
+        box.topLeft,
+      ], const Color(0xFF3B5BFD));
+      final handle = box.bottomRight;
+      canvas.drawCircle(
+        handle,
+        12 / scale,
+        Paint()..color = const Color(0xFF3B5BFD),
+      );
+      canvas.drawCircle(
+        handle,
+        12 / scale,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2 / scale,
+      );
     }
     canvas.restore();
   }

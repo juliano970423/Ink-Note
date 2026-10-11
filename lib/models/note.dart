@@ -194,6 +194,68 @@ class PageBg {
       );
 }
 
+/// 貼上/插入的圖片：頁內左上 (x, y)＋尺寸 (w, h)，PNG 存同目錄
+/// `{basename}_img{id}.png`（見 NoteStore.saveImage）。
+/// 顯示在 PDF 底圖之上、筆跡之下（可直接在圖上批註；橡皮/圈選不碰圖片）。
+class NoteImage {
+  final String id; // Note.newId()，hex，檔名安全
+  final int page; // 所在頁（0 起）
+  final double x;
+  final double y;
+  final double w;
+  final double h;
+
+  const NoteImage({
+    required this.id,
+    required this.page,
+    required this.x,
+    required this.y,
+    required this.w,
+    required this.h,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'page': page,
+        'x': x,
+        'y': y,
+        'w': w,
+        'h': h,
+      };
+
+  factory NoteImage.fromJson(Map<String, dynamic> json) => NoteImage(
+        id: json['id'] as String,
+        page: (json['page'] as num?)?.toInt() ?? 0,
+        x: (json['x'] as num).toDouble(),
+        y: (json['y'] as num).toDouble(),
+        w: (json['w'] as num).toDouble(),
+        h: (json['h'] as num).toDouble(),
+      );
+
+  NoteImage copyWith(
+          {String? id, int? page, double? x, double? y, double? w, double? h}) =>
+      NoteImage(
+        id: id ?? this.id,
+        page: page ?? this.page,
+        x: x ?? this.x,
+        y: y ?? this.y,
+        w: w ?? this.w,
+        h: h ?? this.h,
+      );
+
+  /// 整圖平移（頁內座標）。
+  NoteImage moved(Offset by) =>
+      copyWith(x: x + by.dx, y: y + by.dy);
+
+  /// 等比縮放（錨定左上，w/h 同比）。
+  NoteImage scaled(double factor) =>
+      copyWith(w: (w * factor).clamp(8, 4000), h: (h * factor).clamp(8, 4000));
+
+  /// 命中測試（頁內座標）。
+  bool contains(Offset p) =>
+      p.dx >= x && p.dx <= x + w && p.dy >= y && p.dy <= y + h;
+}
+
 class Note {
   static const int currentVersion = 1;
 
@@ -212,6 +274,9 @@ class Note {
   List<int> hiddenLayers;
   /// PDF 底圖（空 = 普通筆記）。下標 = 頁碼。
   List<PageBg> backgrounds;
+  /// 貼上/插入的圖片（空 = 無）。PNG 另存（見 NoteStore.saveImage），
+  /// 這裡只記頁碼＋頁內位置尺寸。
+  List<NoteImage> images;
 
   Note({
     required this.id,
@@ -224,11 +289,13 @@ class Note {
     List<String>? layerNames,
     List<int>? hiddenLayers,
     List<PageBg>? backgrounds,
+    List<NoteImage>? images,
   })  : strokes = strokes ?? [],
         layerNames =
             layerNames ?? <String>['圖層 1'],
         hiddenLayers = hiddenLayers ?? <int>[],
-        backgrounds = backgrounds ?? <PageBg>[];
+        backgrounds = backgrounds ?? <PageBg>[],
+        images = images ?? <NoteImage>[];
 
   Map<String, dynamic> toJson() => {
         'version': currentVersion,
@@ -241,6 +308,7 @@ class Note {
         'layerNames': layerNames,
         'hiddenLayers': hiddenLayers,
         'backgrounds': backgrounds.map((e) => e.toJson()).toList(),
+        'images': images.map((e) => e.toJson()).toList(),
         'strokes': strokes.map((e) => e.toJson()).toList(),
       };
 
@@ -277,6 +345,10 @@ class Note {
       // 舊文件無此欄位 → 預設根目錄/無限畫布（向前相容，不升級 version）。
       folder: json['folder'] as String? ?? '',
       pageId: json['page'] as String?,
+      images: (json['images'] as List?)
+              ?.map((e) => NoteImage.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          <NoteImage>[],
       layerNames: (json['layerNames'] as List?)
               ?.map((e) => e.toString())
               .toList() ??

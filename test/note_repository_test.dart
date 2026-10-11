@@ -43,6 +43,35 @@ void main() {
     expect(loaded.strokes.first.points.first.p, 1.0);
   });
 
+  test('貼圖：NoteImage json 往返＋PNG 存取刪', () async {
+    final n = _note('img001', '貼圖');
+    n.images.add(const NoteImage(
+        id: 'ab12', page: 0, x: 10, y: 20, w: 100, h: 50));
+    await repo.save(n);
+    final loaded = await repo.load('img001');
+    expect(loaded.images.length, 1);
+    expect(loaded.images.first.id, 'ab12');
+    expect(loaded.images.first.w, 100);
+    // 舊文件無 images 欄位 → 空列表（向前相容）
+    final legacy = Note.fromJson({
+      'id': 'old01',
+      'title': '舊',
+      'createdAt': '2026-10-05T17:30:00.000Z',
+      'updatedAt': '2026-10-05T17:30:00.000Z',
+      'strokes': [],
+    });
+    expect(legacy.images, isEmpty);
+    // PNG：存→讀→刪→讀空；刪筆記連圖一起清
+    final png = [1, 2, 3, 4, 5];
+    await repo.saveImage('img001', 'ab12', png);
+    expect(await repo.loadImage('img001', 'ab12'), png);
+    await repo.deleteImage('img001', 'ab12');
+    expect(await repo.loadImage('img001', 'ab12'), isNull);
+    await repo.saveImage('img001', 'ab12', png);
+    await repo.delete('img001');
+    expect(await repo.loadImage('img001', 'ab12'), isNull);
+  });
+
   test('原子寫入：無 .tmp 殘留', () async {
     await repo.save(_note('abcd12', 't'));
     final files = await Directory('${tmp.path}/notes')

@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:pasteboard/pasteboard.dart';
 
 import '../export/export_saver.dart';
 import '../export/note_pdf.dart';
@@ -23,18 +25,21 @@ import 'ink_canvas.dart';
 /// 視圖：正常 / 全屏（留工具欄+頁碼，收側欄） / 沉浸（什麼都不顯示）。
 enum ViewMode { normal, fullscreen, zen }
 
-/// 撤銷快照：筆跡 + 圖層名 + 隱藏 + 使用中圖層（圖層結構變動一起撤銷）。
+/// 撤銷快照：筆跡 + 圖層名 + 隱藏 + 使用中圖層 + 貼圖 meta 一起撤銷。
+/// 貼圖 PNG 文件刪除時保留（孤兒隨筆記刪除一起清），undo 回來直接能讀。
 class _HistoryEntry {
   final List<Stroke> strokes;
   final List<String> layerNames;
   final List<int> hidden;
   final int active;
+  final List<NoteImage> images;
 
   _HistoryEntry({
     required this.strokes,
     required this.layerNames,
     required this.hidden,
     required this.active,
+    required this.images,
   });
 }
 
@@ -103,6 +108,13 @@ class _EditorPageState extends State<EditorPage> {
   Map<int, int> _bgWidths = {};
   /// 原 PDF 字節（向量源頭 + 高清底圖來源；普通筆記為 null，懶載入）。
   Uint8List? _origPdfBytes;
+  /// 貼圖解碼快取（id → 圖），即時層每幀現畫。
+  Map<String, ui.Image> _noteImgs = {};
+  Note? _imgNote;
+  /// 已選中圖片 id（圖片浮動操作條顯隱依據；與圈選互斥）。
+  String? _selectedImageId;
+  /// 圖片拖動會話（首個 changed 時 checkpoint，end 結算；一次拖抹一次 undo）。
+  bool _imgSessionActive = false;
   bool _bgUpgrading = false;
   /// 後台填充進行中（懶載入導入的剩餘頁；與升級互斥共用一道門）。
   bool _fillingBg = false;
@@ -139,6 +151,7 @@ class _EditorPageState extends State<EditorPage> {
     );
     _titleCtrl = TextEditingController(text: _note.title);
     _refreshBgImages();
+    _loadNoteImages();
     if (_hasPdfPages) {
       // 懒加载导入：首屏秒开，其余页后台填像素
       WidgetsBinding.instance
@@ -151,6 +164,9 @@ class _EditorPageState extends State<EditorPage> {
     _saveTimer?.cancel();
     _titleCtrl.dispose();
     for (final img in _bgImages.values) {
+      img.dispose();
+    }
+    for (final img in _noteImgs.values) {
       img.dispose();
     }
     super.dispose();
@@ -179,6 +195,29 @@ class _EditorPageState extends State<EditorPage> {
       } catch (_) {}
     }
     _canvasKey.currentState?.setBgImages(Map<int, ui.Image>.from(_bgImages));
+  }
+
+  /// 貼圖解碼跟上當前筆記（打開/回滾/undo 後調用，只補缺的不重載），
+  /// 好了就推給畫布（即時層，不重建快取）。
+  Future<void> _loadNoteImages() async {
+    if (!identical(_imgNote, _note)) {
+      for (final img in _noteImgs.values) {
+        img.dispose();
+      }
+      _noteImgs = {};
+      _imgNote = _note;
+      _selectedImageId = null;
+    }
+    for (final m in _note.images) {
+      if (_noteImgs.containsKey(m.id)) continue;
+      try {
+        final bytes = await widget.repo.loadImage(_note.id, m.id);
+        if (bytes == null || !mounted) continue;
+        final img = await decodePng(bytes);
+        if (img != null && mounted) _noteImgs[m.id] = img;
+      } catch (_) {}
+    }
+    _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
   }
 
   /// 該頁底圖鍵（舊文件無 key 兜底 `p{i}`，對應首次讀取自動改名的舊檔）。
@@ -907,6 +946,7 @@ class _EditorPageState extends State<EditorPage> {
         layerNames: List<String>.from(_note.layerNames),
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
+        images: List<NoteImage>.from(_note.images),
       );
 
   _HistoryEntry _entryWith(List<Stroke> strokes) => _HistoryEntry(
@@ -914,6 +954,7 @@ class _EditorPageState extends State<EditorPage> {
         layerNames: List<String>.from(_note.layerNames),
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
+        images: List<NoteImage>.from(_note.images),
       );
 
   void _restore(_HistoryEntry snap) {
@@ -924,6 +965,9 @@ class _EditorPageState extends State<EditorPage> {
     _note.hiddenLayers = List<int>.from(snap.hidden);
     _activeLayer =
         snap.active.clamp(0, _note.layerNames.length - 1);
+    _note.images = List<NoteImage>.from(snap.images);
+    // 貼圖 meta 回來了：補解碼缺的（PNG 文件刪除時保留，讀得到）
+    _loadNoteImages();
   }
 
   void _checkpoint() {
@@ -1078,6 +1122,160 @@ class _EditorPageState extends State<EditorPage> {
     _reclampPan();
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
+  }
+
+  // ---------- 貼圖 ----------
+  /// 視口中心（內容座標；無限畫布即頁內，有紙還要減頁頂偏移）。
+  Offset _viewCenterContent() => Offset(
+        (_viewportSize.width / 2 - _panOffset.dx) / _scale,
+        (_viewportSize.height / 2 - _panOffset.dy) / _scale,
+      );
+
+  /// 插入圖片：解碼取尺寸 → 當前頁視口中心放置（寬 cap 480px 等比）→
+  /// 存檔＋推送＋選中（一次 undo 可整筆撤回）。
+  Future<void> _insertImage(Uint8List pngBytes) async {
+    ui.Image? img;
+    try {
+      img = await decodePng(pngBytes);
+    } catch (_) {}
+    if (img == null || !mounted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('圖片打不開')),
+        );
+      }
+      return;
+    }
+    final w0 = img.width.toDouble(), h0 = img.height.toDouble();
+    img.dispose();
+    if (w0 <= 0 || h0 <= 0 || !mounted) return;
+    var page = _pageIndex.clamp(0, max(_pageCount - 1, 0)).toInt();
+    final c = _viewCenterContent();
+    final local = _pageRects.isEmpty || page >= _pageRects.length
+        ? c
+        : c - Offset(0, _pageRects[page].top - 24);
+    if (_pageRects.isNotEmpty && page >= _pageRects.length) page = 0;
+    final w = min(w0, 480.0);
+    final h = w * h0 / w0;
+    final meta = NoteImage(
+      id: Note.newId(),
+      page: page,
+      x: local.dx - w / 2,
+      y: local.dy - h / 2,
+      w: w,
+      h: h,
+    );
+    _checkpoint();
+    setState(() {
+      _note.images.add(meta);
+      _selectedImageId = meta.id;
+    });
+    try {
+      await widget.repo.saveImage(_note.id, meta.id, pngBytes);
+    } catch (_) {}
+    if (!mounted) return;
+    await _loadNoteImages();
+    if (!mounted) return;
+    setState(() => _selectedImageId = meta.id);
+    _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
+    _scheduleAutosave();
+  }
+
+  /// 從剪貼簿貼上（無圖報 snackbar；Web 不支持走同一報錯）。
+  Future<void> _pasteImageFromClipboard() async {
+    Uint8List? bytes;
+    try {
+      bytes = await Pasteboard.image;
+    } catch (_) {}
+    if (bytes == null || bytes.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('剪貼簿沒有圖片')),
+        );
+      }
+      return;
+    }
+    await _insertImage(bytes);
+  }
+
+  /// 從文件插入圖片（相冊/文件二選一，讀進內存即貼）。
+  Future<void> _insertImageFromFile() async {
+    dynamic file;
+    try {
+      file = await FilePicker.pickFile(type: FileType.image);
+    } catch (_) {}
+    if (file == null) return; // 取消：靜默返回
+    Uint8List b;
+    try {
+      b = await file.readAsBytes() as Uint8List;
+    } catch (_) {
+      return;
+    }
+    if (b.isEmpty) return;
+    await _insertImage(b);
+  }
+
+  /// 圖片選中變化（畫布 tap 回調；與圈選互斥）。
+  void _onImageSelected(String? id) {
+    setState(() {
+      _selectedImageId = id;
+      if (id != null) _deselect();
+    });
+  }
+
+  /// 圖片拖動開始：首動 checkpoint（一次拖抹一次 undo）。
+  void _onImageDragStart() {
+    if (!_imgSessionActive) {
+      _checkpoint();
+      _imgSessionActive = true;
+    }
+  }
+
+  /// 圖片拖動中：更新 meta（構造參數重建畫布，即時層跟手）。
+  void _onImageChanged(String id, double x, double y, double w, double h) {
+    final i = _note.images.indexWhere((m) => m.id == id);
+    if (i < 0) return;
+    setState(() {
+      _note.images[i] = _note.images[i].copyWith(x: x, y: y, w: w, h: h);
+    });
+  }
+
+  /// 圖片拖動結束：結算存檔。
+  void _onImageDragEnd() {
+    if (!_imgSessionActive) return;
+    _imgSessionActive = false;
+    _scheduleAutosave();
+  }
+
+  /// 刪除選中圖片（PNG 文件保留供 undo，隨筆記刪除一起清）。
+  Future<void> _deleteImage() async {
+    final id = _selectedImageId;
+    if (id == null) return;
+    _checkpoint();
+    _noteImgs.remove(id)?.dispose();
+    setState(() {
+      _note.images.removeWhere((m) => m.id == id);
+      _selectedImageId = null;
+    });
+    _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
+    _scheduleAutosave();
+  }
+
+  /// 已選中圖片的堆疊矩形（操作條定位用；越界/無選中返回 null）。
+  Rect? _selectedImageStacked() {
+    final id = _selectedImageId;
+    if (id == null) return null;
+    for (final m in _note.images) {
+      if (m.id != id) continue;
+      if (m.page < 0 ||
+          (_pageRects.isNotEmpty && m.page >= _pageRects.length)) {
+        return null;
+      }
+      final dy =
+          _pageRects.isEmpty ? 0.0 : _pageRects[m.page].top - 24;
+      return Rect.fromLTWH(m.x, m.y + dy, m.w, m.h);
+    }
+    return null;
   }
 
   // ---------- 圈選 ----------
@@ -1790,8 +1988,16 @@ class _EditorPageState extends State<EditorPage> {
     final scheme = Theme.of(context).colorScheme;
     final zen = _view == ViewMode.zen;
     final bounds = _selectionBounds;
-    return Scaffold(
-      body: Stack(
+    final imgBox = _selectedImageStacked();
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+            _pasteImageFromClipboard,
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true):
+            _pasteImageFromClipboard,
+      },
+      child: Scaffold(
+        body: Stack(
         children: [
           Positioned.fill(
             child: LayoutBuilder(
@@ -1811,6 +2017,11 @@ class _EditorPageState extends State<EditorPage> {
                   onStrokeEraseEnd: _onStrokeEraseEnd,
                   onPixelEraseTick: _onPixelEraseTick,
                   onPixelEraseEnd: _onPixelEraseEnd,
+                  images: _note.images,
+                  onImageSelected: _onImageSelected,
+                  onImageDragStart: _onImageDragStart,
+                  onImageChanged: _onImageChanged,
+                  onImageDragEnd: _onImageDragEnd,
                   panOffset: _panOffset,
                   scale: _scale,
                   onPanUpdate: _onPanUpdate,
@@ -1886,6 +2097,35 @@ class _EditorPageState extends State<EditorPage> {
                       icon: const Icon(Icons.close),
                       tooltip: '取消選擇',
                       onPressed: () => setState(_deselect),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          // 圖片操作條（選中圖片時顯示在圖上方：刪除＋取消）
+          if (!zen && imgBox != null)
+            Positioned(
+              left: (imgBox.left * _scale + _panOffset.dx)
+                  .clamp(8, double.infinity),
+              top: (imgBox.top * _scale + _panOffset.dy - 52)
+                  .clamp(8, double.infinity),
+              child: Card(
+                color: scheme.surfaceContainerHigh.withValues(alpha: 0.92),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: '刪除圖片',
+                      onPressed: _deleteImage,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: '取消選擇',
+                      onPressed: () => setState(() {
+                        _selectedImageId = null;
+                        _canvasKey.currentState?.deselectImage();
+                      }),
                     ),
                   ],
                 ),
@@ -2244,6 +2484,24 @@ class _EditorPageState extends State<EditorPage> {
                                   ),
                                   MenuItemButton(
                                     leadingIcon: const Icon(
+                                        Icons.content_paste),
+                                    onPressed: () {
+                                      _moreMenu.close();
+                                      _pasteImageFromClipboard();
+                                    },
+                                    child: const Text('從剪貼簿貼上圖片'),
+                                  ),
+                                  MenuItemButton(
+                                    leadingIcon: const Icon(
+                                        Icons.image_outlined),
+                                    onPressed: () {
+                                      _moreMenu.close();
+                                      _insertImageFromFile();
+                                    },
+                                    child: const Text('從文件插入圖片'),
+                                  ),
+                                  MenuItemButton(
+                                    leadingIcon: const Icon(
                                         Icons.pan_tool_outlined),
                                     trailingIcon: _readOnly
                                         ? const Icon(Icons.check)
@@ -2298,6 +2556,7 @@ class _EditorPageState extends State<EditorPage> {
               ),
             ),
         ],
+      ),
       ),
     );
   }
