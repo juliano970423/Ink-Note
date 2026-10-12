@@ -1972,7 +1972,8 @@ class _EditorPageState extends State<EditorPage> {
           hiddenLayers: _note.hiddenLayers.toSet(),
           backgrounds: bgs,
           images: _note.images,
-          imageBytes: imgBytes);
+          imageBytes: imgBytes,
+          params: _params);
       final name = '${Note.sanitizeTitle(_note.title)}_${_note.id}.pdf';
       final where = await savePdfBytes(name, bytes);
       if (mounted) {

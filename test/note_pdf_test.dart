@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_notes/export/note_pdf.dart';
 import 'package:ink_notes/models/note.dart';
@@ -83,5 +85,29 @@ void main() {
     // 圖有進去：比沒圖大
     final withoutImg = await buildNotePdf(n);
     expect(withImg.length, greaterThan(withoutImg.length));
+  });
+
+  test('筆刷匯出為填充輪廓（f 操作符）', () async {
+    final a = await buildNotePdf(_note());
+    expect(String.fromCharCodes(a.take(5)), '%PDF-');
+    // 解開 Flate 內容流：筆刷筆是填充路徑（f），不是整頁圖
+    final text = String.fromCharCodes(a);
+    final streams = RegExp(r'stream\r?\n([\s\S]*?)endstream')
+        .allMatches(text)
+        .map((m) => m.group(1)!)
+        .toList();
+    var fills = 0;
+    for (final s in streams) {
+      List<int> raw;
+      try {
+        raw = ZLibCodec().decode(s.codeUnits.where((c) => c < 256).toList());
+      } catch (_) {
+        continue;
+      }
+      final d = String.fromCharCodes(raw);
+      fills += RegExp(r' f ').allMatches(d).length;
+    }
+    // 兩筆筆刷 → 兩個填充輪廓（操作符空格分隔：'… h f q …'）
+    expect(fills, 2);
   });
 }

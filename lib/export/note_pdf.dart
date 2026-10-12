@@ -1,13 +1,19 @@
 import 'dart:typed_data';
+import 'dart:ui' show Offset;
 
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../ink/stroke_renderer.dart';
+import '../ink/velocity_tracker.dart';
 import '../models/note.dart';
 
 /// 把筆記匯出為 PDF（純 Dart，可跑 Web；全向量）。
-/// - 筆跡：直接畫成向量路徑（壓感按寬度分段，螢光半透明，幾何圖形對應直線/矩形/橢圓/虛線），放大不糊。
+/// - 筆刷筆：跟屏上 `paintStroke` 同一數學——`strokeOutline` 填充輪廓
+///   （同一套 thinning/streamline，size 取存檔值，壓感取存好的 p），
+///   屏上什麼粗細，紙上就是什麼粗細；單點圓公式也一致。
+/// - 螢光/虛線/幾何：同屏上（中心線描邊、等弧虛線、手柄公式），幾何筆
+///   控制點直接描邊不走壓感輪廓。
 /// - 貼圖：原 PNG/JPEG 嵌入（照片本來就是點陣，包向量殼）。
 /// - PDF 底圖頁：底圖當整頁圖，其餘同上。
 /// - 有紙：每頁筆記一頁 PDF（空白尾頁不存，故無空頁）。
@@ -20,7 +26,10 @@ Future<Uint8List> buildNotePdf(
   Map<int, Uint8List> backgrounds = const {},
   List<NoteImage> images = const [],
   Map<String, Uint8List> imageBytes = const {},
+  StrokeParams? params,
 }) async {
+  // 輪廓參數跟屏上重放一致：當前手感（thinning/streamline），size 逐筆取存檔。
+  final eff = params ?? StrokeParams();
   List<Stroke> visible(List<Stroke> ss) =>
       ss.where((s) => !hiddenLayers.contains(s.layer)).toList();
   List<NoteImage> visibleImgs(int page) => [
@@ -64,6 +73,7 @@ Future<Uint8List> buildNotePdf(
                 visibleImgs(i),
                 imageBytes,
                 hlWidth: hlWidth,
+                params: eff,
               ),
             ],
           ),
@@ -114,6 +124,7 @@ Future<Uint8List> buildNotePdf(
               visibleImgs(i),
               imageBytes,
               hlWidth: hlWidth,
+              params: eff,
             ),
           ),
         ),
@@ -177,6 +188,7 @@ Future<Uint8List> buildNotePdf(
           vimgs,
           imageBytes,
           hlWidth: hlWidth,
+          params: eff,
         ),
       ),
     ),
@@ -210,6 +222,7 @@ List<pw.Widget> _layered(
   List<NoteImage> images,
   Map<String, Uint8List> imageBytes, {
   required double hlWidth,
+  required StrokeParams params,
 }) {
   final out = <pw.Widget>[];
   final layers = <int>{
@@ -244,7 +257,7 @@ List<pw.Widget> _layered(
     out.add(
       pw.CustomPaint(
         size: PdfPoint(map.format.width, map.format.height),
-        painter: (g, _) => paintVectorStrokes(g, ls, map, hlWidth),
+        painter: (g, _) => paintVectorStrokes(g, ls, map, hlWidth, params),
       ),
     );
   }
@@ -258,18 +271,20 @@ int _argb(String hex) {
   return int.parse(h, radix: 16);
 }
 
-/// 一批筆跡畫進 PdfGraphics（y 已上翻；線帽線角全圓）。
+/// 一批筆跡畫進 PdfGraphics（跟屏上 paintStroke 同分支同公式，
+/// 只是把 dart:ui 換成 PDF 操作符；y 已上翻；線帽線角全圓）。
 void paintVectorStrokes(
   PdfGraphics g,
   List<Stroke> strokes,
   ExportPageMap map,
   double hlWidth,
+  StrokeParams params,
 ) {
   g.setLineCap(PdfLineCap.round);
   g.setLineJoin(PdfLineJoin.round);
   for (final s in strokes) {
     if (s.points.isEmpty) continue;
-    _paintStroke(g, s, map, hlWidth);
+    _paintStroke(g, s, map, hlWidth, params);
   }
 }
 
@@ -281,119 +296,112 @@ void _polyline(PdfGraphics g, List<(double, double)> pts) {
   g.strokePath();
 }
 
-// 壓感分段：相鄰同寬度（0.25pt 一檔）併成一段畫，筆觸粗細跟屏上一致。
-void _paintStroke(PdfGraphics g, Stroke s, ExportPageMap map, double hlWidth) {
+void _fillCircle(PdfGraphics g, double cx, double cy, double r) {
+  if (r <= 0) return;
+  g.drawEllipse(cx, cy, r, r);
+  g.fillPath();
+}
+
+void _paintStroke(PdfGraphics g, Stroke s, ExportPageMap map, double hlWidth,
+    StrokeParams params) {
   final type = PenTypeLabel.parse(s.type);
+  final alpha = s.alpha.clamp(0.05, 1.0);
   final color = PdfColor.fromInt(_argb(s.color));
   final pts = [for (final p in s.points) (map.px(p.x), map.py(p.y))];
-  if (type == PenType.highlighter) {
-    g.saveContext();
-    g.setGraphicState(PdfGraphicState(strokeOpacity: s.alpha.clamp(0.05, 1.0)));
-    g.setStrokeColor(color);
-    g.setLineWidth((s.size * hlWidth * map.sc).clamp(0.5, 1000));
+  // 幾何筆（修正產物）：控制點直接描邊，閉環首尾相接；
+  // 不走壓感輪廓（跟屏上一樣）。闭环判定用顯示座標。
+  if (type == PenType.brush && s.geometric) {
     if (pts.length == 1) {
-      g.drawLine(pts[0].$1, pts[0].$2, pts[0].$1 + 0.01, pts[0].$2);
-      g.strokePath();
-    } else {
-      _polyline(g, pts);
+      g.saveContext();
+      g.setFillColor(color);
+      _fillCircle(g, pts[0].$1, pts[0].$2, s.size * 0.5 * map.sc);
+      g.restoreContext();
+      return;
     }
+    g.saveContext();
+    g.setStrokeColor(color);
+    g.setLineWidth((s.size * map.sc).clamp(0.5, 1000));
+    g.moveTo(pts[0].$1, pts[0].$2);
+    for (var i = 1; i < pts.length; i++) {
+      g.lineTo(pts[i].$1, pts[i].$2);
+    }
+    final first = s.points.first, last = s.points.last;
+    if ((Offset(first.x, first.y) - Offset(last.x, last.y)).distance < 1e-6) {
+      g.closePath();
+    }
+    g.strokePath();
     g.restoreContext();
     return;
   }
-  if (type == PenType.dashed && pts.length >= 2) {
+  if (type == PenType.highlighter) {
+    if (pts.length == 1) {
+      g.saveContext();
+      g.setGraphicState(PdfGraphicState(fillOpacity: alpha));
+      g.setFillColor(color);
+      _fillCircle(g, pts[0].$1, pts[0].$2, (s.size * 1.5 + 1) * map.sc);
+      g.restoreContext();
+      return;
+    }
+    g.saveContext();
+    g.setGraphicState(PdfGraphicState(strokeOpacity: alpha));
+    g.setStrokeColor(color);
+    g.setLineWidth((s.size * hlWidth * map.sc).clamp(0.5, 1000));
+    _polyline(g, pts);
+    g.restoreContext();
+    return;
+  }
+  if (type == PenType.dashed) {
+    if (pts.length == 1) {
+      g.saveContext();
+      g.setFillColor(color);
+      _fillCircle(g, pts[0].$1, pts[0].$2, s.size * 0.5 * map.sc);
+      g.restoreContext();
+      return;
+    }
+    // 屏上先按 2px 等弧重採樣再打虛線（節距跟速度無關）——同樣處理
+    var dpts =
+        s.points.map((e) => Offset(e.x, e.y)).toList();
+    final len = pathLength(dpts);
+    if (len > 0) {
+      dpts = resamplePoints(dpts, (len / 2).ceil().clamp(2, 4000));
+    }
     final dash = s.size * 2.5 * map.sc;
     final gap = s.size * 1.5 * map.sc;
     g.saveContext();
     g.setStrokeColor(color);
     g.setLineWidth((s.size * map.sc).clamp(0.5, 1000));
     g.setLineDashPattern([dash, gap]);
-    _polyline(g, pts);
-    g.restoreContext();
-    return;
-  }
-  if (s.geometric && pts.length == 2) {
-    g.saveContext();
-    g.setStrokeColor(color);
-    g.setLineWidth((s.size * map.sc).clamp(0.5, 1000));
-    g.drawLine(pts[0].$1, pts[0].$2, pts[1].$1, pts[1].$2);
-    g.strokePath();
-    g.restoreContext();
-    return;
-  }
-  if (s.geometric && pts.length == 5) {
-    var l = double.infinity, b = double.infinity;
-    var r = -double.infinity, t = -double.infinity;
-    for (final p in pts) {
-      if (p.$1 < l) l = p.$1;
-      if (p.$2 < b) b = p.$2;
-      if (p.$1 > r) r = p.$1;
-      if (p.$2 > t) t = p.$2;
-    }
-    g.saveContext();
-    g.setStrokeColor(color);
-    g.setLineWidth((s.size * map.sc).clamp(0.5, 1000));
-    g.drawRect(l, b, r - l, t - b);
-    g.strokePath();
-    g.restoreContext();
-    return;
-  }
-  if (s.geometric && pts.length > 8) {
-    var l = double.infinity, b = double.infinity;
-    var r = -double.infinity, t = -double.infinity;
-    for (final p in pts) {
-      if (p.$1 < l) l = p.$1;
-      if (p.$2 < b) b = p.$2;
-      if (p.$1 > r) r = p.$1;
-      if (p.$2 > t) t = p.$2;
-    }
-    g.saveContext();
-    g.setStrokeColor(color);
-    g.setLineWidth((s.size * map.sc).clamp(0.5, 1000));
-    g.drawEllipse((l + r) / 2, (b + t) / 2, (r - l) / 2, (t - b) / 2);
-    g.strokePath();
+    _polyline(g, [for (final p in dpts) (map.px(p.dx), map.py(p.dy))]);
     g.restoreContext();
     return;
   }
   if (pts.length == 1) {
+    // 單點筆：屏上公式 r = size*p*0.5+0.5（顯示 px）填充圓
+    final pt = s.points.first;
     g.saveContext();
-    g.setStrokeColor(color);
-    g.setLineWidth((s.size * map.sc).clamp(0.5, 1000));
-    g.drawLine(pts[0].$1, pts[0].$2, pts[0].$1 + 0.01, pts[0].$2);
-    g.strokePath();
+    g.setFillColor(color);
+    _fillCircle(g, pts[0].$1, pts[0].$2,
+        (s.size * pt.p.clamp(0.05, 1.0) * 0.5 + 0.5) * map.sc);
     g.restoreContext();
     return;
   }
-  // 普通手寫：按壓感寬度分段畫
+  // 普通筆刷：跟屏上同一調用——size 取存檔值，壓感取存好的 p，
+  // thinning/streamline 取當前手感；輪廓點列顯示座標算完再映射，
+  // 跟屏上只差一個仿射變換，形狀完全一致。
+  final peff = params.copy()..size = s.size;
+  final outline = strokeOutline(
+    [for (final p in s.points) Offset(p.x, p.y)],
+    [for (final p in s.points) p.p],
+    params: peff,
+  );
+  if (outline.length < 3) return;
   g.saveContext();
-  g.setStrokeColor(color);
-  var run = <(double, double)>[pts[0]];
-  var runW = _bucket(s.points[0].p, s.size, map.sc);
-  void flush() {
-    if (run.isEmpty) return;
-    g.setLineWidth(runW);
-    if (run.length == 1) {
-      g.drawLine(run[0].$1, run[0].$2, run[0].$1 + 0.01, run[0].$2);
-      g.strokePath();
-    } else {
-      _polyline(g, run);
-    }
+  g.setFillColor(color);
+  g.moveTo(map.px(outline[0].dx), map.py(outline[0].dy));
+  for (var i = 1; i < outline.length; i++) {
+    g.lineTo(map.px(outline[i].dx), map.py(outline[i].dy));
   }
-
-  for (var i = 1; i < pts.length; i++) {
-    final w = _bucket(s.points[i].p, s.size, map.sc);
-    if (w == runW) {
-      run.add(pts[i]);
-    } else {
-      // 轉折點兩邊各留，段不斷線
-      run.add(pts[i]);
-      flush();
-      run = [pts[i]];
-      runW = w;
-    }
-  }
-  flush();
+  g.closePath();
+  g.fillPath();
   g.restoreContext();
 }
-
-double _bucket(double p, double size, double sc) =>
-    ((size * sc * p.clamp(0.05, 1.0)).clamp(0.5, 1000) * 4).round() / 4;
