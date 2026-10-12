@@ -7,6 +7,8 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdf_document/pdf_document.dart' as pdoc;
 
+import 'test_png.dart';
+
 Future<List<int>> _samplePdf() async {
   final doc = pw.Document();
   doc.addPage(pw.Page(
@@ -204,8 +206,7 @@ void main() {
         1);
   });
 
-  test('向量匯出：源頁全刪光拋錯（調用方回退光柵）', () async {
-    final orig = await _twoPagePdf();
+  test('向量匯出：源頁全刪光拋錯（調用方回退光柵）', () async {    final orig = await _twoPagePdf();
     expect(
         () => buildVectorPdf(
               original: Uint8List.fromList(orig),
@@ -216,5 +217,47 @@ void main() {
               ],
             ),
         throwsA(anything));
+  });
+
+  test('向量匯出：圖片以 Stamp 嵌入，缺檔跳過', () async {
+    final orig = await _samplePdf();
+    const img = NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100);
+    final out = buildVectorPdf(
+      original: Uint8List.fromList(orig),
+      strokes: [_line()],
+      backgrounds: const [PageBg(w: 800, h: 1131)],
+      images: const [img],
+      imageBytes: {'im1': tinyPng()},
+    );
+    final reopened = pdoc.PdfDocument.open(out);
+    expect(reopened.pageCount, 1);
+    expect(
+        reopened.pages[0].annotations
+            .where((a) => a.subtype == 'Stamp')
+            .length,
+        1);
+    expect(
+        reopened.pages[0].annotations
+            .where((a) => a.subtype == 'Ink')
+            .length,
+        1);
+    // 沒給位元組：圖跳過，筆還在
+    final noBytes = buildVectorPdf(
+      original: Uint8List.fromList(orig),
+      strokes: [_line()],
+      backgrounds: const [PageBg(w: 800, h: 1131)],
+      images: const [img],
+    );
+    final reopened2 = pdoc.PdfDocument.open(noBytes);
+    expect(
+        reopened2.pages[0].annotations
+            .where((a) => a.subtype == 'Stamp')
+            .length,
+        0);
+    expect(
+        reopened2.pages[0].annotations
+            .where((a) => a.subtype == 'Ink')
+            .length,
+        1);
   });
 }

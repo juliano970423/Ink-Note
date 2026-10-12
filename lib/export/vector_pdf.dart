@@ -23,8 +23,15 @@ int _hexColor(String hex) {
 /// (fx, fy) 為頁內歸一化座標（左上原點），(rw, rh) 為旋轉後尺寸，
 /// (mw, mh) 為未旋轉尺寸，rot 為 /Rotate。
 /// 返回未旋轉用戶空間座標（crop 原點偏移由調用方加）。
-math.Point<double> _unrotate(double fx, double fy, double rw, double rh,
-    double mw, double mh, int rot) {
+math.Point<double> _unrotate(
+  double fx,
+  double fy,
+  double rw,
+  double rh,
+  double mw,
+  double mh,
+  int rot,
+) {
   final px = fx * rw;
   final py = (1 - fy) * rh;
   // /Rotate 是顯示時順時針轉：先轉後平移進正框，再求逆。
@@ -60,8 +67,7 @@ List<(double, double)> mapStrokeToPdf(
       (() {
         final fx = (p.x - 24) / _dispW;
         final fy = (p.y - 24) / dispH;
-        final r =
-            _unrotate(fx, fy, rotW, rotH, unrotW, unrotH, rotation);
+        final r = _unrotate(fx, fy, rotW, rotH, unrotW, unrotH, rotation);
         return (r.x + cropLeft, r.y + cropBottom);
       })(),
   ];
@@ -71,6 +77,8 @@ Uint8List buildVectorPdf({
   required Uint8List original,
   required List<Stroke> strokes,
   required List<PageBg> backgrounds,
+  List<NoteImage> images = const [],
+  Map<String, Uint8List> imageBytes = const {},
   double hlWidth = 3.0,
 }) {
   final doc = PdfDocument.open(original);
@@ -120,7 +128,7 @@ Uint8List buildVectorPdf({
     // 刪掉顯示中不再引用的源頁（全刪光就拋錯 → 調用方回退光柵）。
     final drop = [
       for (var j = 0; j < origCount; j++)
-        if (!used.contains(j)) j
+        if (!used.contains(j)) j,
     ];
     if (drop.length >= origCount) {
       throw StateError('no source pages referenced');
@@ -137,8 +145,7 @@ Uint8List buildVectorPdf({
     for (var i = 0; i < effSrc.length; i++) {
       if (effSrc[i] == null) {
         final b = blankBoxFor(i);
-        editor.insertBlankPage(
-            width: b.width, height: b.height, at: i);
+        editor.insertBlankPage(width: b.width, height: b.height, at: i);
       }
     }
   }
@@ -168,12 +175,20 @@ Uint8List buildVectorPdf({
     final bg = i < backgrounds.length
         ? backgrounds[i]
         : backgrounds.isNotEmpty
-            ? backgrounds.last
-            : const PageBg(w: 800, h: 1131);
+        ? backgrounds.last
+        : const PageBg(w: 800, h: 1131);
     final dispH = _dispW * bg.h / bg.w;
     final sc = rw / _dispW; // 顯示 px → pt（等比）
 
-    // 本頁可見筆按圖層由底到頂（同層保持原順序）
+    // 本頁可見筆按圖層由底到頂（同層保持原順序）；圖片同層先於筆跡
+    // （跟屏上每層先圖後筆一致）。
+    (double, double) mp(NotePoint p) {
+      final fx = (p.x - 24) / _dispW;
+      final fy = (p.y - 24) / dispH;
+      final u = _unrotate(fx, fy, rw, rh, box.width, box.height, rot);
+      return (u.x + box.left, u.y + box.bottom);
+    }
+
     final indexed = <(int, Stroke)>[];
     for (var k = 0; k < strokes.length; k++) {
       if (strokes[k].page == i) indexed.add((k, strokes[k]));
@@ -182,109 +197,143 @@ Uint8List buildVectorPdf({
       final l = a.$2.layer.compareTo(b.$2.layer);
       return l != 0 ? l : a.$1.compareTo(b.$1);
     });
+    final pageLayers = <int>{
+      for (final (_, s) in indexed) s.layer,
+      for (final m in images)
+        if (m.page == i) m.layer,
+    }.toList()..sort();
 
-    (double, double) mp(NotePoint p) {
-      final fx = (p.x - 24) / _dispW;
-      final fy = (p.y - 24) / dispH;
-      final u = _unrotate(fx, fy, rw, rh, box.width, box.height, rot);
-      return (u.x + box.left, u.y + box.bottom);
-    }
-
-    for (final (_, s) in indexed) {
-      if (s.points.isEmpty) continue;
-      final type = PenTypeLabel.parse(s.type);
-      final color = _hexColor(s.color);
-      if (type == PenType.highlighter) {
-        // 螢光：寬線低透明（標準 PDF 高亮做法，字透得出來）
+    for (final l in pageLayers) {
+      for (final m in images) {
+        if (m.page != i || m.layer != l) continue;
+        final bytes = imageBytes[m.id];
+        if (bytes == null || bytes.isEmpty) continue;
+        final a = mp(NotePoint(x: m.x, y: m.y, p: 1, t: 0));
+        final b = mp(NotePoint(x: m.x + m.w, y: m.y + m.h, p: 1, t: 0));
+        final ll = a.$1 < b.$1 ? a.$1 : b.$1;
+        final rr = a.$1 > b.$1 ? a.$1 : b.$1;
+        final bb = a.$2 < b.$2 ? a.$2 : b.$2;
+        final tt = a.$2 > b.$2 ? a.$2 : b.$2;
+        if (rr - ll < 0.5 || tt - bb < 0.5) continue;
+        try {
+          editor.addImageStamp(
+            i,
+            PdfRect(ll, bb, rr, tt),
+            PdfEmbeddableImage.decode(bytes),
+          );
+        } catch (_) {
+          // 單張壞圖跳過，不整頁回退光柵
+        }
+      }
+      for (final (_, s) in indexed) {
+        if (s.layer != l) continue;
+        if (s.points.isEmpty) continue;
+        final type = PenTypeLabel.parse(s.type);
+        final color = _hexColor(s.color);
+        if (type == PenType.highlighter) {
+          // 螢光：寬線低透明（標準 PDF 高亮做法，字透得出來）
+          editor.addInk(
+            i,
+            [
+              [for (final p in s.points) mp(p)],
+            ],
+            color: color,
+            strokeWidth: math.max(0.5, s.size * hlWidth * sc),
+            opacity: s.alpha.clamp(0.05, 1.0),
+          );
+          continue;
+        }
+        if (type == PenType.dashed && s.points.length >= 2) {
+          final dash = s.size * 2.5 * sc;
+          final gap = s.size * 1.5 * sc;
+          editor.addPolyLine(
+            i,
+            [for (final p in s.points) mp(p)],
+            strokeColor: color,
+            strokeWidth: math.max(0.5, s.size * sc),
+            dashPattern: [dash, gap],
+          );
+          continue;
+        }
+        if (s.geometric && s.points.length == 2) {
+          final a = mp(s.points[0]);
+          final b = mp(s.points[1]);
+          editor.addLine(
+            i,
+            a,
+            b,
+            strokeColor: color,
+            strokeWidth: math.max(0.5, s.size * sc),
+          );
+          continue;
+        }
+        if (s.geometric && s.points.length == 5) {
+          // 閉環矩形 → 外接框正方形批註
+          var l = double.infinity,
+              b = double.infinity,
+              r = -double.infinity,
+              t = -double.infinity;
+          for (final p in s.points) {
+            final m = mp(p);
+            if (m.$1 < l) l = m.$1;
+            if (m.$2 < b) b = m.$2;
+            if (m.$1 > r) r = m.$1;
+            if (m.$2 > t) t = m.$2;
+          }
+          editor.addSquare(
+            i,
+            PdfRect(l, b, r, t),
+            strokeColor: color,
+            strokeWidth: math.max(0.5, s.size * sc),
+          );
+          continue;
+        }
+        if (s.geometric && s.points.length > 8) {
+          // 閉環圓 → 外接框圓批註
+          var l = double.infinity,
+              b = double.infinity,
+              r = -double.infinity,
+              t = -double.infinity;
+          for (final p in s.points) {
+            final m = mp(p);
+            if (m.$1 < l) l = m.$1;
+            if (m.$2 < b) b = m.$2;
+            if (m.$1 > r) r = m.$1;
+            if (m.$2 > t) t = m.$2;
+          }
+          editor.addCircle(
+            i,
+            PdfRect(l, b, r, t),
+            strokeColor: color,
+            strokeWidth: math.max(0.5, s.size * sc),
+          );
+          continue;
+        }
+        if (s.points.length == 1) {
+          // 單點 → 小圓點
+          final m = mp(s.points.first);
+          final rr = math.max(0.5, s.size * sc * 0.5);
+          editor.addCircle(
+            i,
+            PdfRect(m.$1 - rr, m.$2 - rr, m.$1 + rr, m.$2 + rr),
+            strokeColor: color,
+            strokeWidth: 0.5,
+          );
+          continue;
+        }
+        // 普通手寫：壓感 polyline
         editor.addInk(
           i,
           [
-            [for (final p in s.points) mp(p)]
+            [for (final p in s.points) mp(p)],
           ],
           color: color,
-          strokeWidth: math.max(0.5, s.size * hlWidth * sc),
-          opacity: s.alpha.clamp(0.05, 1.0),
-        );
-        continue;
-      }
-      if (type == PenType.dashed && s.points.length >= 2) {
-        final dash = s.size * 2.5 * sc;
-        final gap = s.size * 1.5 * sc;
-        editor.addPolyLine(
-          i,
-          [for (final p in s.points) mp(p)],
-          strokeColor: color,
           strokeWidth: math.max(0.5, s.size * sc),
-          dashPattern: [dash, gap],
+          pressures: [
+            [for (final p in s.points) p.p.clamp(0.05, 1.0)],
+          ],
         );
-        continue;
       }
-      if (s.geometric && s.points.length == 2) {
-        final a = mp(s.points[0]);
-        final b = mp(s.points[1]);
-        editor.addLine(i, a, b,
-            strokeColor: color,
-            strokeWidth: math.max(0.5, s.size * sc));
-        continue;
-      }
-      if (s.geometric && s.points.length == 5) {
-        // 閉環矩形 → 外接框正方形批註
-        var l = double.infinity,
-            b = double.infinity,
-            r = -double.infinity,
-            t = -double.infinity;
-        for (final p in s.points) {
-          final m = mp(p);
-          if (m.$1 < l) l = m.$1;
-          if (m.$2 < b) b = m.$2;
-          if (m.$1 > r) r = m.$1;
-          if (m.$2 > t) t = m.$2;
-        }
-        editor.addSquare(i, PdfRect(l, b, r, t),
-            strokeColor: color,
-            strokeWidth: math.max(0.5, s.size * sc));
-        continue;
-      }
-      if (s.geometric && s.points.length > 8) {
-        // 閉環圓 → 外接框圓批註
-        var l = double.infinity,
-            b = double.infinity,
-            r = -double.infinity,
-            t = -double.infinity;
-        for (final p in s.points) {
-          final m = mp(p);
-          if (m.$1 < l) l = m.$1;
-          if (m.$2 < b) b = m.$2;
-          if (m.$1 > r) r = m.$1;
-          if (m.$2 > t) t = m.$2;
-        }
-        editor.addCircle(i, PdfRect(l, b, r, t),
-            strokeColor: color,
-            strokeWidth: math.max(0.5, s.size * sc));
-        continue;
-      }
-      if (s.points.length == 1) {
-        // 單點 → 小圓點
-        final m = mp(s.points.first);
-        final rr = math.max(0.5, s.size * sc * 0.5);
-        editor.addCircle(
-            i, PdfRect(m.$1 - rr, m.$2 - rr, m.$1 + rr, m.$2 + rr),
-            strokeColor: color,
-            strokeWidth: 0.5);
-        continue;
-      }
-      // 普通手寫：壓感 polyline
-      editor.addInk(
-        i,
-        [
-          [for (final p in s.points) mp(p)]
-        ],
-        color: color,
-        strokeWidth: math.max(0.5, s.size * sc),
-        pressures: [
-          [for (final p in s.points) p.p.clamp(0.05, 1.0)]
-        ],
-      );
     }
   }
   return editor.save();

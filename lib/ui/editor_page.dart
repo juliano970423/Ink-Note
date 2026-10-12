@@ -1934,10 +1934,19 @@ class _EditorPageState extends State<EditorPage> {
         final bytes = await widget.repo.loadBackground(_note.id, _bgKey(i));
         if (bytes != null) bgs[i] = bytes;
       }
+      // 貼圖位元組（隱藏圖層不匯出；缺檔的圖跳過）
+      final imgBytes = <String, Uint8List>{};
+      final visibleImgs = <NoteImage>[];
+      for (final m in _note.images) {
+        if (_note.hiddenLayers.contains(m.layer)) continue;
+        visibleImgs.add(m);
+        final bytes = await widget.repo.loadImage(_note.id, m.id);
+        if (bytes != null && bytes.isNotEmpty) imgBytes[m.id] = bytes;
+      }
       Uint8List? bytes;
       var vector = false;
       // PDF 底圖筆記：向量匯出（原 PDF + 批註疊加，字保持可选）；
-      // 原文件缺失/加密/解析失敗就回退光柵。
+      // 原文件缺失/加密/解析失敗就回退自建向量頁。
       if (_note.backgrounds.isNotEmpty) {
         final orig = await widget.repo.loadOriginalPdf(_note.id);
         if (orig != null) {
@@ -1948,6 +1957,8 @@ class _EditorPageState extends State<EditorPage> {
                   .where((s) => !_note.hiddenLayers.contains(s.layer))
                   .toList(),
               backgrounds: _note.backgrounds,
+              images: visibleImgs,
+              imageBytes: imgBytes,
               hlWidth: _hlWidth,
             );
             vector = true;
@@ -1959,14 +1970,16 @@ class _EditorPageState extends State<EditorPage> {
       bytes ??= await buildNotePdf(_note,
           hlWidth: _hlWidth,
           hiddenLayers: _note.hiddenLayers.toSet(),
-          backgrounds: bgs);
+          backgrounds: bgs,
+          images: _note.images,
+          imageBytes: imgBytes);
       final name = '${Note.sanitizeTitle(_note.title)}_${_note.id}.pdf';
       final where = await savePdfBytes(name, bytes);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(
-                  'PDF 已匯出：$where${vector ? '（向量批註，字可選）' : ''}')),
+                  'PDF 已匯出：$where${vector ? '（原文件+向量批註，字可選）' : '（全向量，放大不糊）'}')),
         );
       }
     } catch (e) {
