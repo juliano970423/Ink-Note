@@ -262,7 +262,7 @@ class NoteRepository implements NoteStore {
   }
 
   /// PDF 底圖：與 note json 同目錄，`{basename}_bg{key}.png`
-  ///（key 只含字母數字，舊版按頁編號的 `_bg{i}.png` 首次讀到自動改名）。
+  ///（key 只含字母數字）。
   Future<File> backgroundFileForId(String id, String key) async {
     final f = await findNoteFile(id);
     if (f == null) throw StateError('note not found: $id');
@@ -275,19 +275,6 @@ class NoteRepository implements NoteStore {
     try {
       final bg = await backgroundFileForId(id, key);
       if (await bg.exists()) return await bg.readAsBytes();
-      // 舊版文件：key `p{i}` 對應舊檔名 `_bg{i}.png`，搬過來
-      final m = RegExp(r'^p(\d+)$').firstMatch(key);
-      if (m != null) {
-        final f = await findNoteFile(id);
-        if (f != null) {
-          final legacy =
-              File(f.path.replaceAll(RegExp(r'\.json$'), '_bg${m[1]}.png'));
-          if (await legacy.exists()) {
-            await legacy.rename(bg.path);
-            return await bg.readAsBytes();
-          }
-        }
-      }
     } catch (_) {}
     return null;
   }
