@@ -104,8 +104,6 @@ class _HomePageState extends State<HomePage> {
       ),
     );
     if (picked == null || !mounted) return; // null = 對話框被取消
-    // ignore: avoid_print
-    print('INKDBG create picked=$picked');
     if (picked == '__pdf__') {
       await _importPdf();
       return;
@@ -121,11 +119,7 @@ class _HomePageState extends State<HomePage> {
       pageId: pageId,
     );
     await widget.repo.save(note);
-    // ignore: avoid_print
-    print('INKDBG create saved id=${note.id}');
     await _openNewNote(note);
-    // ignore: avoid_print
-    print('INKDBG create opened');
   }
 
   /// 建檔後開編輯器（新建/匯入共用）。

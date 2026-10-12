@@ -805,7 +805,7 @@ void main() {
     expect(ends, 1);
   });
 
-  testWidgets('note image: tap selects, drag moves, handle resizes',
+  testWidgets('note image (lasso): tap selects, drag moves, handle resizes',
       (tester) async {
     String? selected;
     var starts = 0, ends = 0;
@@ -823,7 +823,7 @@ void main() {
           color: '#000000',
           size: 4.0,
           penType: PenType.brush,
-          tool: ToolMode.pen,
+          tool: ToolMode.lasso,
           palmRejection: false,
           onStrokeCompleted: (_, _) {},
           onStrokeEraseTick: (_, _) {},
@@ -874,8 +874,8 @@ void main() {
     tester.state<InkCanvasState>(find.byType(InkCanvas))
         .setNoteImages({'im1': img});
     await tester.pump();
-    // 點圖選中（純點選不調 drag start/end；筆操作統一用 stylus，
-    // 手指只畫線不碰圖）
+    // 圈選工具下點圖選中（純點選不調 drag start/end；
+    // 手指在防誤觸關閉時同樣走圈選分支，筆工具則永遠畫線不碰圖）
     Future<void> stylusTap(Offset p) async {
       final tg = await tester.startGesture(p,
           kind: ui.PointerDeviceKind.stylus);
@@ -984,9 +984,9 @@ void main() {
     expect(strokes, 2);
   });
 
-  testWidgets('stylus tap on empty deselects image without dotting',
-      (tester) async {
-    String? selected = 'init';
+  testWidgets('pen tool draws over image, never selects', (tester) async {
+    String? selected;
+    final changed = <List<double>>[];
     var strokes = 0;
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
@@ -1014,7 +1014,9 @@ void main() {
             selected = id;
           },
           onImageDragStart: () {},
-          onImageChanged: (_, _, _, _, _) {},
+          onImageChanged: (id, x, y, w, h) {
+            changed.add([x, y, w, h]);
+          },
           onImageDragEnd: () {},
           images: const [
             NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
@@ -1036,6 +1038,113 @@ void main() {
       ),
     ));
     await tester.pumpAndSettle();
+    // 筆（stylus）在圖上點按＋拖動：不選中、不移動、照常落筆（描圖/標註）
+    final t = await tester.startGesture(const Offset(150, 150),
+        kind: ui.PointerDeviceKind.stylus);
+    await t.up();
+    await tester.pump();
+    expect(selected, isNull);
+    final g = await tester.startGesture(const Offset(150, 150),
+        kind: ui.PointerDeviceKind.stylus);
+    await g.moveTo(const Offset(200, 150));
+    await tester.pump();
+    await g.up();
+    await tester.pump();
+    expect(selected, isNull);
+    expect(changed, isEmpty);
+    // 點一下一筆（單點筆）＋拖一筆
+    expect(strokes, 2);
+    // 滑鼠＋筆工具同理：在圖上只畫線
+    final m = await tester.startGesture(const Offset(150, 150),
+        kind: ui.PointerDeviceKind.mouse, buttons: 1);
+    await m.moveTo(const Offset(200, 150));
+    await tester.pump();
+    await m.up();
+    await tester.pump();
+    expect(selected, isNull);
+    expect(changed, isEmpty);
+    expect(strokes, 3);
+  });
+
+  testWidgets('pen drags selected image; tap outside deselects, no dot',
+      (tester) async {
+    String? selected;
+    var starts = 0, ends = 0;
+    final changed = <List<double>>[];
+    var strokes = 0;
+    // 模擬剛插入：上層已選中，本地還沒同步；之後跟著 editor 重建
+    var selIds = <String>{'im1'};
+    Widget buildCanvas() => MaterialApp(
+          home: Scaffold(
+            body: InkCanvas(
+              strokes: const [],
+              params: StrokeParams(
+                  maxSpeed: 1800,
+                  emaWeight: 0.6,
+                  thinning: 0.6,
+                  streamline: 0.5,
+                  size: 4.0),
+              color: '#000000',
+              size: 4.0,
+              penType: PenType.brush,
+              tool: ToolMode.pen,
+              palmRejection: false,
+              onStrokeCompleted: (_, _) {
+                strokes++;
+              },
+              onStrokeEraseTick: (_, _) {},
+              onStrokeEraseEnd: () {},
+              onPixelEraseTick: (_, _) {},
+              onPixelEraseEnd: () {},
+              onImageSelected: (id) {
+                selected = id;
+                selIds = id == null ? <String>{} : {id};
+              },
+              onImageDragStart: () {
+                starts++;
+              },
+              onImageChanged: (id, x, y, w, h) {
+                changed.add([x, y, w, h]);
+              },
+              onImageDragEnd: () {
+                ends++;
+              },
+              images: const [
+                NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+              ],
+              selectedImageIds: selIds,
+              panOffset: Offset.zero,
+              scale: 1.0,
+              onPanUpdate: (_) {},
+              onZoomUpdate: (_, _) {},
+              onZoomEnd: () {},
+              onPageFlick: (_) {},
+              onTwoFingerDoubleTap: () {},
+              onTwoFingerTripleTap: () {},
+              onLassoCompleted: (_, _) {},
+              onSelectionMove: (_) {},
+              onSelectionRotate: (_, _) {},
+              onSelectionEnd: () {},
+              onDeselect: () {},
+            ),
+          ),
+        );
+    await tester.pumpWidget(buildCanvas());
+    await tester.pumpAndSettle();
+    // 筆在選中圖內拖＝移動圖，不落筆（剛丟進去筆也能擺）
+    final g = await tester.startGesture(const Offset(150, 150),
+        kind: ui.PointerDeviceKind.stylus);
+    await g.moveTo(const Offset(170, 160));
+    await tester.pump();
+    expect(starts, 1);
+    expect(changed.isNotEmpty, isTrue);
+    expect(changed.last[0], greaterThan(100));
+    await g.up();
+    await tester.pump();
+    expect(ends, 1);
+    expect(strokes, 0);
+    expect(selected, 'im1');
+    // 筆點圖外：取消選中，且不留點筆
     Future<void> stylusTap(Offset p) async {
       final tg = await tester.startGesture(p,
           kind: ui.PointerDeviceKind.stylus);
@@ -1043,15 +1152,93 @@ void main() {
       await tester.pump();
     }
 
-    // 筆點圖選中，再點空白：選中清掉，且不留點筆
+    await stylusTap(const Offset(500, 500));
+    expect(selected, isNull);
+    expect(strokes, 0);
+    // 像 editor 一樣把上層選中同步掉（真機 setState 重建）
+    await tester.pumpWidget(buildCanvas());
+    await tester.pump();
+    // 選中已清：筆在圖上就是畫線（不重選）
+    await stylusTap(const Offset(150, 150));
+    expect(selected, isNull);
+    expect(strokes, 1);
+    expect(changed.length, 1);
+  });
+
+  testWidgets('lasso: tap image selects, tap empty deselects, no strokes',
+      (tester) async {
+    String? selected = 'init';
+    var strokes = 0, lassos = 0, deselects = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.lasso,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {
+            strokes++;
+          },
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (id) {
+            selected = id;
+          },
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {
+            lassos++;
+          },
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {
+            deselects++;
+          },
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    Future<void> stylusTap(Offset p) async {
+      final tg = await tester.startGesture(p,
+          kind: ui.PointerDeviceKind.stylus);
+      await tg.up();
+      await tester.pump();
+    }
+
+    // 圈選工具點圖選中，再點空白：選中清掉，不落筆不圈選
     await stylusTap(const Offset(150, 150));
     expect(selected, 'im1');
     await stylusTap(const Offset(500, 500));
     expect(selected, isNull);
+    expect(deselects, 1);
     expect(strokes, 0);
-    // 選中已清：再點空白就是正常單點筆
-    await stylusTap(const Offset(500, 500));
-    expect(strokes, 1);
+    expect(lassos, 0);
+    // 已清：點圖可再選中
+    await stylusTap(const Offset(150, 150));
+    expect(selected, 'im1');
   });
 
   testWidgets('palm rejection + lasso: touch pans instead of lassoing',
