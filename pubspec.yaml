@@ -44,6 +44,7 @@ dependencies:
   pdf_document: ^7.0.0
   pdf_graphics: ^7.0.0
   pasteboard: ^0.5.0
+  share_plus: ^13.3.1
 
 dev_dependencies:
   flutter_test:

@@ -1977,10 +1977,12 @@ class _EditorPageState extends State<EditorPage> {
       final name = '${Note.sanitizeTitle(_note.title)}_${_note.id}.pdf';
       final where = await savePdfBytes(name, bytes);
       if (mounted) {
+        final tag = vector ? '（原文件+向量批註，字可選）' : '（全向量，放大不糊）';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text(
-                  'PDF 已匯出：$where${vector ? '（原文件+向量批註，字可選）' : '（全向量，放大不糊）'}')),
+              content: Text(where.startsWith('已分享')
+                  ? '$where$tag'
+                  : 'PDF 已匯出：$where$tag')),
         );
       }
     } catch (e) {
