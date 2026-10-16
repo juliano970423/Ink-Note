@@ -1175,10 +1175,14 @@ class _EditorPageState extends State<EditorPage> {
       layer: _activeLayer,
     );
     _checkpoint();
+    // 規則：新增圖片時清掉舊選取（筆跡選區一起清），只選中新圖。
+    _moveArmed = false;
     setState(() {
+      _selected = {};
       _note.images.add(meta);
       _selectedImageIds = {meta.id};
     });
+    _canvasKey.currentState?.selectImageLocal(meta.id);
     try {
       await widget.repo.saveImage(_note.id, meta.id, pngBytes);
     } catch (_) {}

@@ -290,6 +290,47 @@ void main() {
     expect(loaded.strokes, isEmpty);
   });
 
+  testWidgets('圈選字+圖：框住一起選中，拖動一起走', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _seedNote('a1b2', 't', '');
+    // 圖放在筆畫旁邊，同框能一起圈住（解碼圖缺席不影響命中邏輯）
+    note.images.add(const NoteImage(
+        id: 'im1', page: 0, x: 120, y: 285, w: 60, h: 20));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: EditorPage(repo: store, settings: AppSettings(), note: loaded),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // 圈選工具框住筆畫＋圖片
+    await tester.tap(find.byType(LassoIcon));
+    await tester.pump();
+    final g = await tester.startGesture(const Offset(80, 270));
+    for (final p in const [
+      Offset(220, 270),
+      Offset(220, 330),
+      Offset(80, 330),
+      Offset(80, 270),
+    ]) {
+      await g.moveTo(p);
+    }
+    await g.up();
+    await tester.pump();
+    // 筆跡操作條＋圖片操作條各一個刪除鍵＝兩邊都選中了
+    expect(find.byIcon(Icons.delete_outline), findsNWidgets(2));
+    // 框內拖動（+40,+0）：筆跡與圖片同向平移
+    final sx0 = loaded.strokes.first.points.first.x;
+    final ix0 = loaded.images.first.x;
+    await tester.dragFrom(const Offset(140, 300), const Offset(40, 0));
+    await tester.pump();
+    expect(loaded.strokes.first.points.first.x,
+        closeTo(sx0 + 40, 1.0));
+    expect(loaded.images.first.x, closeTo(ix0 + 40, 1.0));
+  });
+
   Future<void> pumpEditor(WidgetTester tester, MemoryNoteStore store,
       AppSettings settings, Note note) async {
     await tester.pumpWidget(MaterialApp(

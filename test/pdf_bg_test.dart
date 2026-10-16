@@ -1383,6 +1383,139 @@ void main() {
     expect(pans, greaterThan(0));
     expect(deselects, 0);
     expect(lassos, 0);
+    // 手指點（無位移）空白：算 tap，全清選取
+    final g3 = await tester.startGesture(const Offset(500, 500));
+    await g3.up();
+    await tester.pump();
+    expect(deselects, 1);
+  });
+
+  testWidgets('pen tap empty clears stroke selection too (no dot)',
+      (tester) async {
+    String? selected;
+    var deselects = 0, strokes = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.pen,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {
+            strokes++;
+          },
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (id) {
+            selected = id;
+          },
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          selectedImageIds: const {'im1'},
+          // 模擬另有筆跡選區（上層狀態）
+          selectionBounds: const Rect.fromLTWH(400, 400, 50, 50),
+          selectionPage: 0,
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {
+            deselects++;
+          },
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 筆點空白：圖選清掉（selected=null），筆跡選區走 onDeselect，不留點筆
+    final t = await tester.startGesture(const Offset(500, 500),
+        kind: ui.PointerDeviceKind.stylus);
+    await t.up();
+    await tester.pump();
+    expect(selected, isNull);
+    expect(deselects, 1);
+    expect(strokes, 0);
+  });
+
+  testWidgets('eraser down clears all selection first', (tester) async {
+    var deselects = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.strokeEraser,
+          palmRejection: false,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          selectedImageIds: const {'im1'},
+          selectionBounds: const Rect.fromLTWH(400, 400, 50, 50),
+          selectionPage: 0,
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {
+            deselects++;
+          },
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 橡皮落空白：先全清選取，再開擦除會話（空擦不留痕）
+    final g = await tester.startGesture(const Offset(500, 500),
+        kind: ui.PointerDeviceKind.stylus);
+    await tester.pump();
+    await g.up();
+    await tester.pump();
+    expect(deselects, 1);
   });
 
   testWidgets('touchMoveSelection OFF: touch always pans (legacy)',

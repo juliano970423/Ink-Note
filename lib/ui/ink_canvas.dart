@@ -165,6 +165,8 @@ class InkCanvasState extends State<InkCanvas> {
   Duration? _twoStartTime;
   // 單指平移（唯讀模式 / 防誤觸下的觸屏）
   Offset? _singlePanLast;
+  // 單指平移落筆點：抬起位移 <6px 算 tap，點空白全清選取（跟筆點空一致）。
+  Offset? _singlePanDown;
 
   /// 該指針是否參與手勢計數。觸屏永遠計數（雙指縮放/單指平移自由，
   /// 防誤觸只管「落筆」，不管導航）；手掌誤放由落筆處的手掌保護擋，
@@ -347,6 +349,12 @@ class InkCanvasState extends State<InkCanvas> {
     return _stackedOfLocal(Offset(m.x + m.w, m.y + m.h), m.page);
   }
 
+  /// 任一選取存在（本地點選圖 / 上層圖選 / 筆跡選區）。
+  bool get _hasAnySelection =>
+      _selectedImageId != null ||
+      widget.selectedImageIds.isNotEmpty ||
+      widget.selectionBounds != null;
+
   void _selectImage(String? id) {
     if (_selectedImageId == id) return;
     _selectedImageId = id;
@@ -360,6 +368,18 @@ class InkCanvasState extends State<InkCanvas> {
 
   /// 對外清圖片選中（操作條取消鈕用；up 路徑點空白已自行處理）。
   void deselectImage() => _selectImage(null);
+
+  /// 上層指定圖片選中（插入圖片用：清舊選取只選新圖；不回調，
+  /// 只同步本地手柄狀態，上層 ids 由調用方 setState）。
+  void selectImageLocal(String? id) {
+    if (_selectedImageId == id) return;
+    _selectedImageId = id;
+    _imgDragPointer = null;
+    _imgResizing = false;
+    _imgDragLast = null;
+    _imgDragStarted = false;
+    if (mounted) setState(() {});
+  }
 
   void _cancelDwell() {
     _dwellTimer?.cancel();
@@ -546,6 +566,7 @@ class InkCanvasState extends State<InkCanvas> {
       _track(e.pointer, e.localPosition, e.kind, e.timeStamp);
       _rightPanLast = e.localPosition;
       _singlePanLast = null;
+      _singlePanDown = null;
       _live = null;
       _lassoPath = [];
       return;
@@ -573,6 +594,7 @@ class InkCanvasState extends State<InkCanvas> {
       _movingSel = false;
       _rotating = false;
       _singlePanLast = null;
+      _singlePanDown = null;
       // 雙指打斷圖片拖（選中保留，只停跟手；殘留會話順手結算）
       _imgDragPointer = null;
       _imgResizing = false;
@@ -595,6 +617,7 @@ class InkCanvasState extends State<InkCanvas> {
           !widget.touchMoveSelection;
       if (touchPanOnly) {
         _singlePanLast = e.localPosition;
+        _singlePanDown = e.localPosition;
         _primary = e.pointer;
         _live = null;
         return;
@@ -649,15 +672,19 @@ class InkCanvasState extends State<InkCanvas> {
             e.kind == PointerDeviceKind.touch &&
             widget.touchMoveSelection) {
           _singlePanLast = e.localPosition;
+          _singlePanDown = e.localPosition;
           _primary = e.pointer;
           _live = null;
         } else {
-          if (_selectedImageId != null) {
-            _selectImage(null);
-          } else if (widget.selectedImageIds.isNotEmpty) {
-            widget.onImageSelected(null);
+          // 點空白取消選取（圖＋筆跡一起清）；無選取時只開新圈選路徑。
+          if (_hasAnySelection) {
+            if (_selectedImageId != null) {
+              _selectImage(null);
+            } else if (widget.selectedImageIds.isNotEmpty) {
+              widget.onImageSelected(null);
+            }
+            widget.onDeselect();
           }
-          widget.onDeselect();
           _lassoPath = [pos];
         }
       }
@@ -668,6 +695,7 @@ class InkCanvasState extends State<InkCanvas> {
     if (widget.readOnly ||
         (widget.palmRejection && e.kind == PointerDeviceKind.touch)) {
       _singlePanLast = e.localPosition;
+      _singlePanDown = e.localPosition;
       _primary = e.pointer;
       _live = null;
       return;
@@ -712,9 +740,18 @@ class InkCanvasState extends State<InkCanvas> {
       }
       if (widget.tool == ToolMode.pen) _deselectTapArmed = e.pointer;
     }
-    // 橡皮：開會話，落筆點立即試刪（點按空白不留 checkpoint；可跨頁）
+    // 橡皮：開會話，落筆點立即試刪（點按空白不留 checkpoint；可跨頁）。
+    // 規則：點空白取消選取——有選取時落筆先清全選（圖＋筆跡），再擦。
     if (widget.tool == ToolMode.strokeEraser ||
         widget.tool == ToolMode.pixelEraser) {
+      if (_hasAnySelection) {
+        if (_selectedImageId != null) {
+          _selectImage(null);
+        } else if (widget.selectedImageIds.isNotEmpty) {
+          widget.onImageSelected(null);
+        }
+        widget.onDeselect();
+      }
       _erasing = true;
       _erasePath = [stacked];
       _primary = e.pointer;
@@ -1093,9 +1130,22 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (_singlePanLast != null) {
-      // 單指平移抬起：無後續動作（位移已在 move 裡結清）
+      // 單指平移抬起：位移已在 move 裡結清；幾乎沒動算 tap，
+      // 點空白全清選取（圖＋筆跡，跟筆點空一致），拖了就是純平移。
+      final down = _singlePanDown;
       _singlePanLast = null;
+      _singlePanDown = null;
       if (_primary == e.pointer) _primary = null;
+      if (down != null && (e.localPosition - down).distance < 6) {
+        if (_hasAnySelection) {
+          if (_selectedImageId != null) {
+            _selectImage(null);
+          } else if (widget.selectedImageIds.isNotEmpty) {
+            widget.onImageSelected(null);
+          }
+          widget.onDeselect();
+        }
+      }
       return;
     }
     // 橡皮會話結束：兩種早已逐段刪光，這裡只清游標結算（僅所屬指針）
@@ -1181,13 +1231,15 @@ class InkCanvasState extends State<InkCanvas> {
     if (live == null) {
       return;
     }
-    // 取消點：有圖選中時點圖外，沒畫出東西就不提交（只取消選中）；
-    // 真畫了就正常落筆。
+    // 取消點：有圖選中時點圖外，沒畫出東西就不提交；
+    // 順手把筆跡選區一起清（點空白取消選取，圖＋筆跡不分家）。
+    // 真畫了就正常落筆，選區保留。
     if (_deselectTapArmed != null && e.pointer == _deselectTapArmed) {
       _deselectTapArmed = null;
       if (live.positions.length <= 1) {
         _cancelDwell();
         setState(() => _liveOutline = []);
+        widget.onDeselect();
         return;
       }
     }
@@ -1224,6 +1276,7 @@ class InkCanvasState extends State<InkCanvas> {
     if (wasTwoFinger) widget.onZoomEnd?.call();
     _rightPanLast = null;
     _singlePanLast = null;
+    _singlePanDown = null;
     _rotating = false;
     _rotateCenter = null;
     final wasErasing = _erasing;
