@@ -104,6 +104,30 @@ void main() {
     expect(PenTypeLabel.parse('nope'), PenType.brush);
   });
 
+  test('凍結參數往返：thinning/streamline/hlw 存取，老文件 null', () {
+    const s = Stroke(
+        color: '#000',
+        size: 4,
+        points: [],
+        thinning: 0.9,
+        streamline: 0.1,
+        hlw: 5.0);
+    final rt = Stroke.fromJson(Map<String, dynamic>.from(s.toJson()));
+    expect(rt.thinning, 0.9);
+    expect(rt.streamline, 0.1);
+    expect(rt.hlw, 5.0);
+    // 老文件（無欄位）→ null，渲染時沿用當前設定
+    final legacy = Stroke.fromJson(
+        {'color': '#000', 'size': 4.0, 'points': []});
+    expect(legacy.thinning, isNull);
+    expect(legacy.streamline, isNull);
+    expect(legacy.hlw, isNull);
+    // 拷貝/變換攜帶
+    expect(s.copyWith().thinning, 0.9);
+    expect(s.moved(const Offset(1, 1)).streamline, 0.1);
+    expect(s.rotated(const Offset(0, 0), 0.5).hlw, 5.0);
+  });
+
   test('Stroke.page 往返（預設 0 頁）', () {
     const s = Stroke(color: '#000', size: 4, points: [], page: 2);
     final rt = Stroke.fromJson(

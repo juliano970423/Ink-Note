@@ -43,6 +43,10 @@ class LiveStroke {
   final int page;
   final PenType penType;
   final double alpha;
+  // 落筆時凍結的渲染參數（當前手感快照，toStroke 帶進存檔）。
+  final double thinning;
+  final double streamline;
+  final double hlw;
   final List<Offset> positions = [];
   final List<double> pressures = [];
   final List<Duration> times = [];
@@ -52,7 +56,10 @@ class LiveStroke {
       required this.size,
       this.page = 0,
       this.penType = PenType.brush,
-      this.alpha = 1.0});
+      this.alpha = 1.0,
+      required this.thinning,
+      required this.streamline,
+      required this.hlw});
 
   Stroke toStroke() {
     final base = times.isEmpty ? Duration.zero : times.first;
@@ -71,7 +78,10 @@ class LiveStroke {
         points: pts,
         page: page,
         type: penType.name,
-        alpha: alpha);
+        alpha: alpha,
+        thinning: thinning,
+        streamline: streamline,
+        hlw: hlw);
   }
 }
 
@@ -142,7 +152,10 @@ List<Stroke> eraseStrokePoints(Stroke s, Offset pos, double radius) {
           points: pts,
           page: s.page,
           type: s.type,
-          geometric: s.geometric))
+          geometric: s.geometric,
+          thinning: s.thinning,
+          streamline: s.streamline,
+          hlw: s.hlw))
       .toList();
 }
 
@@ -272,6 +285,9 @@ List<Stroke> snapShape(Stroke s, {required int dwellMs}) {
         type: s.type,
         alpha: s.alpha,
         geometric: true,
+        thinning: s.thinning,
+        streamline: s.streamline,
+        hlw: s.hlw,
       );
 
   final rec = r1.recognizeUnistroke(resamplePoints(pts, 64));
@@ -517,7 +533,10 @@ List<Stroke> clipStrokeToRect(Stroke s, Rect r) {
           points: run,
           page: s.page,
           type: s.type,
-          geometric: s.geometric))
+          geometric: s.geometric,
+          thinning: s.thinning,
+          streamline: s.streamline,
+          hlw: s.hlw))
       .toList();
 }
 
@@ -958,6 +977,8 @@ Path _centerPath(Stroke s) {
 
 /// 在 dart:ui 畫布上繪製單筆（縮圖 / PDF / Picture 快取共用）。
 /// 壓感取自存好的 `p`，不重算。螢光透明度取自存好的 `alpha`。
+/// 輪廓參數優先存檔凍結值（thinning/streamline/hlw 非 null 時）：
+/// 同一筆在任何設備、任何設定下形狀一致；老筆記缺欄位才沿用傳入值。
 void paintStroke(ui.Canvas canvas, Stroke s,
     {double hlWidth = 3.0, StrokeParams? params}) {
   final type = PenTypeLabel.parse(s.type);
@@ -1012,7 +1033,7 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       Paint()
         ..color = _parseColor(s.color).withValues(alpha: alpha)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = s.size * hlWidth
+        ..strokeWidth = s.size * (s.hlw ?? hlWidth)
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round,
     );
@@ -1052,9 +1073,16 @@ void paintStroke(ui.Canvas canvas, Stroke s,
   }
   final positions = s.points.map((e) => Offset(e.x, e.y)).toList();
   final pressures = s.points.map((e) => e.p).toList();
-  // 輪廓參數必須和書寫預覽用同一套（thinning/streamline），否則收筆閃變；
+  // 輪廓參數：存檔凍結值優先（落筆時快照），老筆記缺欄位才用傳入值；
   // size 取存檔值，壓感取存好的 p，不重算。
-  final eff = (params ?? StrokeParams()).copy()..size = s.size;
+  final base = params ?? StrokeParams();
+  final eff = StrokeParams(
+    maxSpeed: base.maxSpeed,
+    emaWeight: base.emaWeight,
+    thinning: s.thinning ?? base.thinning,
+    streamline: s.streamline ?? base.streamline,
+    size: s.size,
+  );
   final outline = strokeOutline(positions, pressures, params: eff);
   if (outline.length < 3) return;
   final path = Path()..moveTo(outline.first.dx, outline.first.dy);

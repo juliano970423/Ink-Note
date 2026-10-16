@@ -345,7 +345,7 @@ void _paintStroke(PdfGraphics g, Stroke s, ExportPageMap map, double hlWidth,
     g.saveContext();
     g.setGraphicState(PdfGraphicState(strokeOpacity: alpha));
     g.setStrokeColor(color);
-    g.setLineWidth((s.size * hlWidth * map.sc).clamp(0.5, 1000));
+    g.setLineWidth((s.size * (s.hlw ?? hlWidth) * map.sc).clamp(0.5, 1000));
     _polyline(g, pts);
     g.restoreContext();
     return;
@@ -386,9 +386,16 @@ void _paintStroke(PdfGraphics g, Stroke s, ExportPageMap map, double hlWidth,
     return;
   }
   // 普通筆刷：跟屏上同一調用——size 取存檔值，壓感取存好的 p，
-  // thinning/streamline 取當前手感；輪廓點列顯示座標算完再映射，
-  // 跟屏上只差一個仿射變換，形狀完全一致。
-  final peff = params.copy()..size = s.size;
+  // thinning/streamline 存檔凍結值優先（老筆記缺欄位才用傳入 params）；
+  // 輪廓點列顯示座標算完再映射，跟屏上只差一個仿射變換，形狀完全一致。
+  final base = params;
+  final peff = StrokeParams(
+    maxSpeed: base.maxSpeed,
+    emaWeight: base.emaWeight,
+    thinning: s.thinning ?? base.thinning,
+    streamline: s.streamline ?? base.streamline,
+    size: s.size,
+  );
   final outline = strokeOutline(
     [for (final p in s.points) Offset(p.x, p.y)],
     [for (final p in s.points) p.p],

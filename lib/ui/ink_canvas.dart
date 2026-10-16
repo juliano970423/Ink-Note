@@ -718,7 +718,10 @@ class InkCanvasState extends State<InkCanvas> {
         size: widget.size,
         page: page,
         penType: widget.penType,
-        alpha: widget.hlAlpha);
+        alpha: widget.hlAlpha,
+        thinning: widget.params.thinning,
+        streamline: widget.params.streamline,
+        hlw: widget.hlWidth);
     live.positions.add(pos);
     live.pressures.add(1.0); // 起筆第一個點 pressure=1.0（落筆頓一下出粗點）
     live.times.add(e.timeStamp);

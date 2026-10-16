@@ -202,6 +202,47 @@ void main() {
     expect(r9, lessThan(r0));
   });
 
+  test('凍結優先：存檔有 thinning 就無視傳入 params（換設備不變形）', () async {
+    // 同一筆凍結 thinning=0.9：傳入 0.0 還是 0.9，渲染行數都一樣
+    final s = Stroke(
+      color: '#000000',
+      size: 8.0,
+      points: [
+        for (var i = 0; i < 10; i++)
+          NotePoint(x: 20.0 + i * 18, y: 100, p: 1.0 - i * 0.1, t: i * 16),
+      ],
+      type: 'brush',
+      thinning: 0.9,
+      streamline: 0.5,
+      hlw: 3.0,
+    );
+    Future<int> colRows(double thinning) async {
+      final pic = await paintStrokesToPicture([s],
+          params: StrokeParams()..thinning = thinning);
+      final img = await pic.toImage(200, 200);
+      final bytes = (await img.toByteData(
+              format: ui.ImageByteFormat.rawRgba))!
+          .buffer
+          .asUint8List();
+      var rows = 0;
+      for (var y = 0; y < 200; y++) {
+        final o = (y * 200 + 182) * 4;
+        if (bytes[o + 3] > 128 &&
+            (bytes[o] < 128 || bytes[o + 1] < 128 || bytes[o + 2] < 128)) {
+          rows++;
+        }
+      }
+      img.dispose();
+      pic.dispose();
+      return rows;
+    }
+
+    final r0 = await colRows(0.0);
+    final r9 = await colRows(0.9);
+    expect(r0, greaterThan(0));
+    expect(r0, r9);
+  });
+
   test('圖層交錯：上層圖蓋下層筆，同層筆蓋圖', () async {
     // 10x10 紅塊當解碼圖
     final rec = ui.PictureRecorder();

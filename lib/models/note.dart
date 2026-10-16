@@ -38,6 +38,12 @@ class Stroke {
   /// 幾何筆（形狀修正產物：直線/圓/矩形）：點列是折線控制點，
   /// 渲染走普通描邊（不斷頭尾相接），不吃壓感輪廓（尖角折線會算壞）。
   final bool geometric;
+  /// 落筆時凍結的渲染參數（null = 老筆記缺欄位，沿用當前設定；
+  /// 非 null = 以存檔為準，換設備/改設定都不變）。
+  /// thinning/streamline 進壓感輪廓，hlw 是螢光筆寬度倍數。
+  final double? thinning;
+  final double? streamline;
+  final double? hlw;
 
   const Stroke({
     required this.color,
@@ -48,6 +54,9 @@ class Stroke {
     this.type = 'brush',
     this.alpha = 1.0,
     this.geometric = false,
+    this.thinning,
+    this.streamline,
+    this.hlw,
   });
 
   Map<String, dynamic> toJson() => {
@@ -59,6 +68,9 @@ class Stroke {
         'type': type,
         'alpha': alpha,
         'geometric': geometric,
+        if (thinning != null) 'thinning': thinning,
+        if (streamline != null) 'streamline': streamline,
+        if (hlw != null) 'hlw': hlw,
       };
 
   factory Stroke.fromJson(Map<String, dynamic> json) => Stroke(
@@ -73,6 +85,10 @@ class Stroke {
         alpha: (json['alpha'] as num?)?.toDouble() ?? 1.0,
         // 舊文件無此欄位 → 預設手寫筆（向前相容）。
         geometric: json['geometric'] as bool? ?? false,
+        // 老筆記無凍結參數 → null，渲染時沿用當前設定。
+        thinning: (json['thinning'] as num?)?.toDouble(),
+        streamline: (json['streamline'] as num?)?.toDouble(),
+        hlw: (json['hlw'] as num?)?.toDouble(),
       );
 
   Stroke copyWith(
@@ -83,7 +99,10 @@ class Stroke {
           int? layer,
           String? type,
           double? alpha,
-          bool? geometric}) =>
+          bool? geometric,
+          double? thinning,
+          double? streamline,
+          double? hlw}) =>
       Stroke(
         color: color ?? this.color,
         size: size ?? this.size,
@@ -93,6 +112,9 @@ class Stroke {
         type: type ?? this.type,
         alpha: alpha ?? this.alpha,
         geometric: geometric ?? this.geometric,
+        thinning: thinning ?? this.thinning,
+        streamline: streamline ?? this.streamline,
+        hlw: hlw ?? this.hlw,
       );
 
   /// 整筆平移（圈選移動用）。
@@ -108,6 +130,9 @@ class Stroke {
         type: type,
         alpha: alpha,
         geometric: geometric,
+        thinning: thinning,
+        streamline: streamline,
+        hlw: hlw,
       );
 
   /// 整筆繞 [center] 旋轉 [radians]（圈選旋轉用，壓感/時間戳保留）。
@@ -127,12 +152,15 @@ class Stroke {
             );
           })
           .toList(),
-      page: page,
-      layer: layer,
-      type: type,
-      alpha: alpha,
-      geometric: geometric,
-    );
+        page: page,
+        layer: layer,
+        type: type,
+        alpha: alpha,
+        geometric: geometric,
+        thinning: thinning,
+        streamline: streamline,
+        hlw: hlw,
+      );
   }
 }
 
