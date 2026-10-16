@@ -1301,4 +1301,152 @@ void main() {
     expect(lassos, 0);
     expect(pans, greaterThan(0));
   });
+
+  testWidgets('touchMoveSelection ON: touch on selection moves, empty pans',
+      (tester) async {
+    var pans = 0, moves = 0, ends = 0, deselects = 0, lassos = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.lasso,
+          palmRejection: true,
+          touchMoveSelection: true,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          selectedImageIds: const {'im1'},
+          selectionBounds: const Rect.fromLTWH(100, 100, 200, 100),
+          selectionPage: 0,
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {
+            pans++;
+          },
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {
+            lassos++;
+          },
+          onSelectionMove: (_) {
+            moves++;
+          },
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {
+            ends++;
+          },
+          onDeselect: () {
+            deselects++;
+          },
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 手指落在選中圖內：拖動選區，不平移、不取消、不圈選
+    final g = await tester.startGesture(const Offset(150, 150));
+    await g.moveTo(const Offset(170, 160));
+    await tester.pump();
+    await g.up();
+    await tester.pump();
+    expect(moves, greaterThan(0));
+    expect(ends, 1);
+    expect(pans, 0);
+    expect(deselects, 0);
+    expect(lassos, 0);
+    // 手指落在空白：平移，選中保留（不取消、不圈選）
+    final g2 = await tester.startGesture(const Offset(500, 500));
+    await g2.moveTo(const Offset(520, 510));
+    await tester.pump();
+    await g2.up();
+    await tester.pump();
+    expect(pans, greaterThan(0));
+    expect(deselects, 0);
+    expect(lassos, 0);
+  });
+
+  testWidgets('touchMoveSelection OFF: touch always pans (legacy)',
+      (tester) async {
+    var pans = 0, moves = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.lasso,
+          palmRejection: true,
+          touchMoveSelection: false,
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (_) {},
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          images: const [
+            NoteImage(id: 'im1', page: 0, x: 100, y: 100, w: 200, h: 100),
+          ],
+          selectedImageIds: const {'im1'},
+          selectionBounds: const Rect.fromLTWH(100, 100, 200, 100),
+          selectionPage: 0,
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {
+            pans++;
+          },
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onPageFlick: (_) {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {
+            moves++;
+          },
+          onSelectionRotate: (_, _) {},
+          onSelectionEnd: () {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // 開關關：手指落在選中圖內也是平移，不拖動
+    final g = await tester.startGesture(const Offset(150, 150));
+    await g.moveTo(const Offset(170, 160));
+    await tester.pump();
+    await g.up();
+    await tester.pump();
+    expect(pans, greaterThan(0));
+    expect(moves, 0);
+  });
 }

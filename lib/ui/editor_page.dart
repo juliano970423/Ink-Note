@@ -2129,6 +2129,7 @@ class _EditorPageState extends State<EditorPage> {
                   penType: _penType,
                   tool: _tool,
                   palmRejection: widget.settings.palmRejection,
+                  touchMoveSelection: widget.settings.touchMoveSelection,
                   onStrokeCompleted: _onStrokeCompleted,
                   onStrokeEraseTick: _onStrokeEraseTick,
                   onStrokeEraseEnd: _onStrokeEraseEnd,

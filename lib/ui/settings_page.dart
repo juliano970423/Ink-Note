@@ -97,6 +97,19 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 12),
+          Card(
+            child: SwitchListTile(
+              title: const Text('手指拖動選取物件'),
+              subtitle: const Text(
+                  '開啟後，防誤觸下手指落在已選物件上可直接拖動；落在空白處仍滑動畫布（關閉則手指一律滑動）'),
+              value: widget.settings.touchMoveSelection,
+              onChanged: (v) async {
+                setState(() => widget.settings.touchMoveSelection = v);
+                await widget.settings.save();
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
           const Card(
             child: Padding(
               padding: EdgeInsets.all(16),

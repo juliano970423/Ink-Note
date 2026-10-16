@@ -41,6 +41,9 @@ class AppSettings {
 
   StrokeParams deviceProfile;
   bool palmRejection;
+  // 手指拖動選取物件（防誤觸下）：開 → 手指落在已選物件上拖動，
+  // 落在空白處仍滑動畫布；關 → 手指一律滑動畫布（舊行為）。
+  bool touchMoveSelection;
   List<String> penColors;
   String lastColor;
   double lastSize;
@@ -57,6 +60,7 @@ class AppSettings {
   AppSettings({
     StrokeParams? deviceProfile,
     this.palmRejection = false,
+    this.touchMoveSelection = true,
     List<String>? penColors,
     this.lastColor = '#000000',
     this.lastSize = 4.0,
@@ -81,6 +85,8 @@ class AppSettings {
               (json['deviceProfile'] as Map).cast<String, dynamic>());
         }
         palmRejection = json['palmRejection'] == true;
+        // 缺欄位預設開（跟構造器一致）
+        touchMoveSelection = json['touchMoveSelection'] != false;
         final pens = json['penColors'];
         if (pens is List && pens.isNotEmpty) {
           penColors = pens.whereType<String>().toList();
@@ -120,6 +126,7 @@ class AppSettings {
     await saveSettingsMap({
       'deviceProfile': deviceProfile.toJson(),
       'palmRejection': palmRejection,
+      'touchMoveSelection': touchMoveSelection,
       'penColors': penColors,
       'lastColor': lastColor,
       'lastSize': lastSize,

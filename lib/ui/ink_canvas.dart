@@ -26,6 +26,10 @@ class InkCanvas extends StatefulWidget {
   final PenType penType;
   final ToolMode tool;
   final bool palmRejection;
+  // 手指拖動選取物件（僅圈選工具＋防誤觸下生效）：
+  // 開 → 手指落在已選物件上拖動，落在空白處仍滑動畫布；
+  // 關 → 手指一律滑動畫布。
+  final bool touchMoveSelection;
   /// 收筆回調：[dwellMs] 為真實停頓（抬起 - 末個真移動，毫秒），形狀修正只認這個。
   final void Function(Stroke stroke, int dwellMs) onStrokeCompleted;
   /// 按筆畫橡皮：碰到即刪——按下/移動就回調 ([chunk], [page])（頁內座標，已按 4px 加密），
@@ -99,6 +103,7 @@ class InkCanvas extends StatefulWidget {
     required this.penType,
     required this.tool,
     required this.palmRejection,
+    this.touchMoveSelection = true,
     required this.onStrokeCompleted,
     required this.onStrokeEraseTick,
     required this.onStrokeEraseEnd,
@@ -581,9 +586,14 @@ class InkCanvasState extends State<InkCanvas> {
     }
     if (_blockUntilLift) return;
     // 圈選工具：筆/滑鼠照常圈；防誤觸開時手指不圈（改單指平移，
-    // 否則手掌誤放滿屏亂圈，與筆工具規則一致）
+    // 否則手掌誤放滿屏亂圈，與筆工具規則一致）。
+    // 例外（touchMoveSelection 開）：手指落在已選物件上 → 拖動物件；
+    // 落在空白處 → 仍平移（不取消選中、不開圈選）。
     if (widget.tool == ToolMode.lasso) {
-      if (widget.palmRejection && e.kind == PointerDeviceKind.touch) {
+      final touchPanOnly = widget.palmRejection &&
+          e.kind == PointerDeviceKind.touch &&
+          !widget.touchMoveSelection;
+      if (touchPanOnly) {
         _singlePanLast = e.localPosition;
         _primary = e.pointer;
         _live = null;
@@ -634,13 +644,22 @@ class InkCanvasState extends State<InkCanvas> {
         }
         // 空白：本地點選＋圈選選中的圖一起清（onDeselect 只清上層），
         // 筆跡選區由上層 _deselect 處理；本次落筆開新圈選路徑。
-        if (_selectedImageId != null) {
-          _selectImage(null);
-        } else if (widget.selectedImageIds.isNotEmpty) {
-          widget.onImageSelected(null);
+        // 例外：手指＋防誤觸＋開關開 → 落空只平移（選中保留，不圈選）。
+        if (widget.palmRejection &&
+            e.kind == PointerDeviceKind.touch &&
+            widget.touchMoveSelection) {
+          _singlePanLast = e.localPosition;
+          _primary = e.pointer;
+          _live = null;
+        } else {
+          if (_selectedImageId != null) {
+            _selectImage(null);
+          } else if (widget.selectedImageIds.isNotEmpty) {
+            widget.onImageSelected(null);
+          }
+          widget.onDeselect();
+          _lassoPath = [pos];
         }
-        widget.onDeselect();
-        _lassoPath = [pos];
       }
       _primary = e.pointer;
       return;
