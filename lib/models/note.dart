@@ -212,12 +212,10 @@ class PageBg {
         if (src != null) 'src': src,
       };
 
-  /// [index] 供舊文件補鍵用（舊文件無 key，讀出來給 `p{index}` 穩定鍵）。
-  factory PageBg.fromJson(Map<String, dynamic> json, [int index = 0]) =>
-      PageBg(
+  factory PageBg.fromJson(Map<String, dynamic> json) => PageBg(
         w: (json['w'] as num).toInt(),
         h: (json['h'] as num).toInt(),
-        key: json['key'] as String? ?? 'p$index',
+        key: json['key'] as String? ?? '',
         src: (json['src'] as num?)?.toInt(),
       );
 }
@@ -357,12 +355,9 @@ class Note {
     final strokes = (json['strokes'] as List? ?? [])
         .map((e) => Stroke.fromJson(e as Map<String, dynamic>))
         .toList();
-    final bgs = (json['backgrounds'] as List?)
-            ?.asMap()
-            .entries
-            .map((e) => PageBg.fromJson(e.value as Map<String, dynamic>, e.key))
-            .toList() ??
-        <PageBg>[];
+    final bgs = (json['backgrounds'] as List? ?? [])
+        .map((e) => PageBg.fromJson(e as Map<String, dynamic>))
+        .toList();
     // PDF 筆記：筆跡落在底圖列表之外的頁（舊版虛擬空白頁），補成真正的
     // 空白頁條目（鍵 `x{頁碼}` 穩定，尺寸套末頁），版式/匯出不再有特例。
     if (bgs.isNotEmpty) {

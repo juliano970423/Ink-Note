@@ -28,7 +28,7 @@ class MemoryNoteStore implements NoteStore {
     }
     _notes[note.id] = note.encode();
     // TODO(保留策略): history/ 目前不設上限，未來加按數量/時間清理。
-    // TODO(同步合併): 未來接 MEGA 同步時雙端同改同一篇，利用 history/ 快照按筆畫時間戳合併。
+    // TODO(同步合併): 未來同步時雙端同改同一篇，利用 history/ 快照按筆畫時間戳合併。
   }
 
   static String _stamp(DateTime t) {

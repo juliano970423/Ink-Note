@@ -62,8 +62,6 @@ class InkCanvas extends StatefulWidget {
   final void Function(Offset delta) onSelectionMove;
   /// 圈選旋轉：手柄拖動的角度增量（繞堆疊座標 [center]），與移動同一個 undo 作用域。
   final void Function(double dAngle, Offset center) onSelectionRotate;
-  /// 拖移結束（抬起）：此時才把出紙部分裁掉（拖曳中途只路過不算）。
-  final VoidCallback onSelectionEnd;
   final VoidCallback onDeselect;
   final Rect? selectionBounds;
   /// 選區所在頁（[selectionBounds] 為該頁頁內座標）。
@@ -128,7 +126,6 @@ class InkCanvas extends StatefulWidget {
     required this.onLassoCompleted,
     required this.onSelectionMove,
     required this.onSelectionRotate,
-    required this.onSelectionEnd,
     required this.onDeselect,
     this.selectionBounds,
     this.selectionPage = 0,
@@ -291,8 +288,8 @@ class InkCanvasState extends State<InkCanvas> {
     _scheduleCompletedRebuild();
   }
 
-  /// 貼圖推送（editor 解碼好後調用；圖片走即時層，每幀現畫，
-  /// 拖動跟手，不進快取，故只 setState 不重建）。
+  /// 貼圖推送（editor 解碼好後調用；畫布 clone 自持，仿底圖；
+  /// 圖烘進快取，故調用方隨後要自行 invalidateCache 或等下次重建）。
   void setNoteImages(Map<String, ui.Image> images) {
     for (final v in _retiredNoteImgs.values) {
       v.dispose();
@@ -1186,8 +1183,6 @@ class InkCanvasState extends State<InkCanvas> {
               (e.localPosition - _lastLocal!) / widget.scale);
         }
         _lastLocal = null;
-        // 拖完才結算出紙裁剪（中途路過不算數）
-        widget.onSelectionEnd();
       } else if (!wasRotating) {
         final upPos = _content(e.localPosition);
         if (_lassoPath.isEmpty ||

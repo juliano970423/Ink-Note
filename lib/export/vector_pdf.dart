@@ -13,12 +13,6 @@ import '../models/note.dart';
 /// 純 Dart，Web 可跑；加解密 PDF 會拋錯，調用方回退光柵。
 const double _dispW = 800.0;
 
-int _hexColor(String hex) {
-  var h = hex.replaceAll('#', '');
-  if (h.length == 6) h = 'FF$h';
-  return int.parse(h.substring(2), radix: 16);
-}
-
 /// 顯示系點 → PDF 頁面空間點（旋轉感知）。
 /// (fx, fy) 為頁內歸一化座標（左上原點），(rw, rh) 為旋轉後尺寸，
 /// (mw, mh) 為未旋轉尺寸，rot 為 /Rotate。
@@ -229,7 +223,7 @@ Uint8List buildVectorPdf({
         if (s.layer != l) continue;
         if (s.points.isEmpty) continue;
         final type = PenTypeLabel.parse(s.type);
-        final color = _hexColor(s.color);
+        final color = hexToArgb(s.color) & 0xFFFFFF;
         if (type == PenType.highlighter) {
           // 螢光：寬線低透明（標準 PDF 高亮做法，字透得出來）
           editor.addInk(

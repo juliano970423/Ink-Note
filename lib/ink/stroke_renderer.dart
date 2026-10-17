@@ -992,7 +992,7 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       canvas.drawCircle(
         Offset(pt.x, pt.y),
         s.size * 0.5,
-        Paint()..color = _parseColor(s.color),
+        Paint()..color = colorFromHex(s.color),
       );
       return;
     }
@@ -1008,7 +1008,7 @@ void paintStroke(ui.Canvas canvas, Stroke s,
     canvas.drawPath(
       path,
       Paint()
-        ..color = _parseColor(s.color)
+        ..color = colorFromHex(s.color)
         ..style = PaintingStyle.stroke
         ..strokeWidth = s.size
         ..strokeCap = StrokeCap.round
@@ -1024,14 +1024,14 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       canvas.drawCircle(
         Offset(pt.x, pt.y),
         s.size * 1.5 + 1,
-        Paint()..color = _parseColor(s.color).withValues(alpha: alpha),
+        Paint()..color = colorFromHex(s.color).withValues(alpha: alpha),
       );
       return;
     }
     canvas.drawPath(
       _centerPath(s),
       Paint()
-        ..color = _parseColor(s.color).withValues(alpha: alpha)
+        ..color = colorFromHex(s.color).withValues(alpha: alpha)
         ..style = PaintingStyle.stroke
         ..strokeWidth = s.size * (s.hlw ?? hlWidth)
         ..strokeCap = StrokeCap.round
@@ -1045,7 +1045,7 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       canvas.drawCircle(
         Offset(pt.x, pt.y),
         s.size * 0.5,
-        Paint()..color = _parseColor(s.color),
+        Paint()..color = colorFromHex(s.color),
       );
       return;
     }
@@ -1056,7 +1056,7 @@ void paintStroke(ui.Canvas canvas, Stroke s,
     canvas.drawPath(
       dashPath(pts, s.size * 2.5, s.size * 1.5),
       Paint()
-        ..color = _parseColor(s.color)
+        ..color = colorFromHex(s.color)
         ..style = PaintingStyle.stroke
         ..strokeWidth = s.size
         ..strokeCap = StrokeCap.round,
@@ -1066,7 +1066,7 @@ void paintStroke(ui.Canvas canvas, Stroke s,
   if (s.points.length == 1) {
     final pt = s.points.first;
     final paint = Paint()
-      ..color = _parseColor(s.color)
+      ..color = colorFromHex(s.color)
       ..style = PaintingStyle.fill;
     canvas.drawCircle(Offset(pt.x, pt.y), s.size * pt.p * 0.5 + 0.5, paint);
     return;
@@ -1093,13 +1093,17 @@ void paintStroke(ui.Canvas canvas, Stroke s,
   canvas.drawPath(
     path,
     Paint()
-      ..color = _parseColor(s.color)
+      ..color = colorFromHex(s.color)
       ..style = PaintingStyle.fill,
   );
 }
 
-Color _parseColor(String hex) {
+/// '#rrggbb'/'#aarrggbb' → ARGB int（屏上、向量、PDF 匯出共用一套）。
+int hexToArgb(String hex) {
   var h = hex.replaceAll('#', '');
   if (h.length == 6) h = 'FF$h';
-  return Color(int.parse(h, radix: 16));
+  return int.parse(h, radix: 16);
 }
+
+/// [hexToArgb] 的 [Color] 版。
+Color colorFromHex(String hex) => Color(hexToArgb(hex));

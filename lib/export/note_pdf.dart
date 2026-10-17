@@ -264,13 +264,6 @@ List<pw.Widget> _layered(
   return out;
 }
 
-/// '#rrggbb'/'#aarrggbb' → ARGB int
-int _argb(String hex) {
-  var h = hex.replaceAll('#', '');
-  if (h.length == 6) h = 'FF$h';
-  return int.parse(h, radix: 16);
-}
-
 /// 一批筆跡畫進 PdfGraphics（跟屏上 paintStroke 同分支同公式，
 /// 只是把 dart:ui 換成 PDF 操作符；y 已上翻；線帽線角全圓）。
 void paintVectorStrokes(
@@ -306,7 +299,7 @@ void _paintStroke(PdfGraphics g, Stroke s, ExportPageMap map, double hlWidth,
     StrokeParams params) {
   final type = PenTypeLabel.parse(s.type);
   final alpha = s.alpha.clamp(0.05, 1.0);
-  final color = PdfColor.fromInt(_argb(s.color));
+  final color = PdfColor.fromInt(hexToArgb(s.color));
   final pts = [for (final p in s.points) (map.px(p.x), map.py(p.y))];
   // 幾何筆（修正產物）：控制點直接描邊，閉環首尾相接；
   // 不走壓感輪廓（跟屏上一樣）。闭环判定用顯示座標。

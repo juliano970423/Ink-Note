@@ -114,8 +114,8 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                '同步預留：本地 notes/ 為唯一真相來源。未來接入 MEGA（FFI 官方 C++ SDK），'
-                '策略 Last-Write-Wins；雙端同改時用 history/ 快照按筆畫時間戳合併。',
+                '同步預留：本地 notes/ 為唯一真相來源。未來接入 OneDrive（Microsoft Graph，'
+                'client ID 在設定頁填寫）；衝突保留兩份手動裁決，雲端刪除進 .trash/。',
                 style: TextStyle(fontSize: 12),
               ),
             ),

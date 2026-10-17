@@ -222,7 +222,7 @@ class _EditorPageState extends State<EditorPage> {
     _canvasKey.currentState?.invalidateCache();
   }
 
-  /// 該頁底圖鍵（舊文件無 key 兜底 `p{i}`，對應首次讀取自動改名的舊檔）。
+  /// 該頁底圖鍵（無 key 兜底 `p{i}`）。
   String _bgKey(int i) {
     final k = _note.backgrounds[i].key;
     return k.isEmpty ? 'p$i' : k;
@@ -1364,7 +1364,7 @@ class _EditorPageState extends State<EditorPage> {
       _checkpoint();
       _moveArmed = true;
     }
-    // 拖曳中不裁紙（路過不算數）；放開才在 onSelectionEnd 結算。
+    // 拖曳中不裁紙（路過不算數）；取消選取時 _deselect() 才結算。
     // moved() 產生新實例，集合跟著換新實例。圖片同向平移（頁內增量＝堆疊增量）。
     final moved = <Stroke>{};
     final next = <Stroke>[];
@@ -1438,10 +1438,6 @@ class _EditorPageState extends State<EditorPage> {
     });
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
-  }
-  void _onSelectionEnd() {
-    // 放開不裁紙：拖出紙的部分留著，還能拖回來或微調；
-    // 取消選取（點空白/×/換工具/跳頁/重圈）時 _deselect() 才結算裁掉。
   }
 
   /// 取消選取結算：有紙/底圖時把選中筆跡出紙的部分裁掉。
@@ -2157,7 +2153,6 @@ class _EditorPageState extends State<EditorPage> {
                   onLassoCompleted: _onLassoCompleted,
                   onSelectionMove: _onSelectionMove,
                   onSelectionRotate: _onSelectionRotate,
-                  onSelectionEnd: _onSelectionEnd,
                   onDeselect: () => setState(_deselect),
                   onPageFlick: _onPageFlick,
                   onTwoFingerDoubleTap: _undo,
@@ -2727,7 +2722,7 @@ class _EditorPageState extends State<EditorPage> {
                       width: 32,
                       height: 32,
                       decoration: BoxDecoration(
-                        color: _parseColor(c),
+                        color: colorFromHex(c),
                         shape: BoxShape.circle,
                         border: Border.all(
                           color: c == sp.color
@@ -2833,12 +2828,6 @@ class _EditorPageState extends State<EditorPage> {
         ),
       ),
     );
-  }
-
-  Color _parseColor(String hex) {
-    var h = hex.replaceAll('#', '');
-    if (h.length == 6) h = 'FF$h';
-    return Color(int.parse(h, radix: 16));
   }
 }
 

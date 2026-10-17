@@ -116,7 +116,7 @@ class NoteRepository implements NoteStore {
     await tmp.writeAsString(note.encode(), flush: true);
     await tmp.rename(target.path);
     // TODO(保留策略): history/ 目前不設上限（筆記體量小），未來加按數量/時間清理。
-    // TODO(同步合併): 未來接 MEGA 同步時雙端同改同一篇，利用 history/ 快照按筆畫時間戳合併（見 SyncBackend）。
+    // TODO(同步合併): 未來同步時雙端同改同一篇，利用 history/ 快照按筆畫時間戳合併。
   }
 
   Future<int> _nextVersion(Directory hdir) async {

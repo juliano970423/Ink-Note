@@ -78,7 +78,7 @@ void main() {
     expect(find.text('第 1/1 頁'), findsOneWidget);
   });
 
-  test('legacy bg gets stable key + overflow pages backfilled', () {
+  test('bg keyless stays empty + overflow pages backfilled', () {
     final note = Note.fromJson({
       'id': 'a1b2',
       'title': 't',
@@ -98,16 +98,16 @@ void main() {
         },
       ],
     });
-    // 舊條目補穩定鍵 p0；第 1、2 頁補空白頁（鍵 x1、x2，尺寸套末頁）
+    // 無 key 維持空（運行期 _bgKey 以 p{i} 兜底）；第 1、2 頁補空白頁（鍵 x1、x2，尺寸套末頁）
     expect(note.backgrounds.length, 3);
-    expect(note.backgrounds[0].key, 'p0');
+    expect(note.backgrounds[0].key, '');
     expect(note.backgrounds[1].key, 'x1');
     expect(note.backgrounds[2].key, 'x2');
     expect(note.backgrounds[1].src, isNull);
     expect(note.backgrounds[2].w, 100);
     // 存檔再讀鍵穩定
     final again = Note.decode(note.encode());
-    expect([for (final b in again.backgrounds) b.key], ['p0', 'x1', 'x2']);
+    expect([for (final b in again.backgrounds) b.key], ['', 'x1', 'x2']);
   });
 
   test('BG note raster export valid PDF', () async {
@@ -330,7 +330,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -450,7 +449,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -509,7 +507,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -582,7 +579,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -643,7 +639,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -706,7 +701,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -789,7 +783,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -856,7 +849,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -963,7 +955,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -1032,7 +1023,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -1124,8 +1114,7 @@ void main() {
               onLassoCompleted: (_, _) {},
               onSelectionMove: (_) {},
               onSelectionRotate: (_, _) {},
-              onSelectionEnd: () {},
-              onDeselect: () {},
+                  onDeselect: () {},
             ),
           ),
         );
@@ -1213,7 +1202,6 @@ void main() {
           },
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {
             deselects++;
           },
@@ -1283,7 +1271,6 @@ void main() {
           },
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
@@ -1304,7 +1291,7 @@ void main() {
 
   testWidgets('touchMoveSelection ON: touch on selection moves, empty pans',
       (tester) async {
-    var pans = 0, moves = 0, ends = 0, deselects = 0, lassos = 0;
+    var pans = 0, moves = 0, deselects = 0, lassos = 0;
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: InkCanvas(
@@ -1353,9 +1340,6 @@ void main() {
             moves++;
           },
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {
-            ends++;
-          },
           onDeselect: () {
             deselects++;
           },
@@ -1370,7 +1354,6 @@ void main() {
     await g.up();
     await tester.pump();
     expect(moves, greaterThan(0));
-    expect(ends, 1);
     expect(pans, 0);
     expect(deselects, 0);
     expect(lassos, 0);
@@ -1440,7 +1423,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {
             deselects++;
           },
@@ -1501,7 +1483,6 @@ void main() {
           onLassoCompleted: (_, _) {},
           onSelectionMove: (_) {},
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {
             deselects++;
           },
@@ -1567,7 +1548,6 @@ void main() {
             moves++;
           },
           onSelectionRotate: (_, _) {},
-          onSelectionEnd: () {},
           onDeselect: () {},
         ),
       ),
