@@ -51,6 +51,86 @@ void main() {
     expect(find.text('第 1/2 頁'), findsOneWidget);
   });
 
+  testWidgets('紙筆記頁面管理：下移換頁序，頁數不變', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 1/2 頁'));
+    await tester.pumpAndSettle();
+    expect(find.text('頁面管理'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.arrow_downward).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect([for (final s in loaded.strokes) s.page], [1, 0]);
+    expect(find.text('第 2/2 頁'), findsOneWidget);
+  });
+
+  testWidgets('紙筆記頁面管理：插入空白頁把後頁筆跡往後推', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 1/2 頁'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.note_add_outlined).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect([for (final s in loaded.strokes) s.page], [0, 2]);
+    expect(find.text('第 2/3 頁'), findsOneWidget);
+  });
+
+  testWidgets('紙筆記頁面管理：刪頁掉筆跡、刪空白尾頁頁數回縮', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+    expect(find.text('第 3/3 頁'), findsOneWidget);
+    await tester.tap(find.text('第 3/3 頁'));
+    await tester.pumpAndSettle();
+    expect(find.text('空白頁'), findsOneWidget);
+    // 刪第 1 頁：該頁筆跡丟掉，第 2 頁筆跡前移，空白尾頁保留
+    await tester.tap(find.byIcon(Icons.delete_outline).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(loaded.strokes.length, 1);
+    expect(loaded.strokes.single.page, 0);
+    expect(find.text('第 1/2 頁'), findsOneWidget);
+    // 再刪空白尾頁：頁數回縮到 1
+    await tester.tap(find.byIcon(Icons.delete_outline).at(1));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('第 1/1 頁'), findsOneWidget);
+  });
+
   testWidgets('連續頁面：兩頁筆跡同屏堆疊，不切頁也都畫出來', (tester) async {
     final store = MemoryNoteStore();
     final note = _a4note();

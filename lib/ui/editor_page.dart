@@ -34,12 +34,16 @@ class _HistoryEntry {
   final int active;
   final List<NoteImage> images;
 
+  /// 紙筆記的末尾空頁額度（頁面管理增刪要靠 undo 還原）。
+  final int blankExtra;
+
   _HistoryEntry({
     required this.strokes,
     required this.layerNames,
     required this.hidden,
     required this.active,
     required this.images,
+    required this.blankExtra,
   });
 }
 
@@ -562,7 +566,7 @@ class _EditorPageState extends State<EditorPage> {
       _pageIndex = newFocus.clamp(0, max(_pageCount - 1, 0));
     });
     _reclampPan();
-    _reloadBgImages();
+    if (_hasPdfPages) _reloadBgImages();
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
@@ -639,14 +643,104 @@ class _EditorPageState extends State<EditorPage> {
     _refreshBgImages();
   }
 
-  /// 分頁條「第 X/Y 頁」入口：排序/插入/刪除。
+  // ---------- 紙筆記頁面管理 ----------
+  // 頁面隱式存在（0.._pageCount-1）：有筆跡的頁才落資料，末尾空白頁記在
+  // _blankExtra；排序/插入/刪除都只搬筆跡頁號，再重算末尾空頁額度。
+
+  /// 重算末尾空頁額度，讓總頁數維持 [count]。
+  void _syncBlankExtra(int count) {
+    var top = -1;
+    for (final s in _note.strokes) {
+      if (s.page > top) top = s.page;
+    }
+    _blankExtra = max(0, count - (top + 1));
+  }
+
+  void _movePaperPage(int from, int to) {
+    final n = _pageCount;
+    if (from == to || from < 0 || to < 0 || from >= n || to >= n) return;
+    _checkpoint();
+    setState(() {
+      _deselect();
+      _note.strokes = _remapPages(from, to);
+      _syncBlankExtra(n);
+    });
+    _afterPageStructureChanged(to);
+  }
+
+  /// 在 [at] 處插入空白頁（[at] = 0.._pageCount）。
+  void _insertPaperBlankPage(int at) {
+    final n = _pageCount;
+    at = at.clamp(0, n);
+    _checkpoint();
+    setState(() {
+      _deselect();
+      _note.strokes = [
+        for (final s in _note.strokes)
+          s.page >= at ? s.copyWith(page: s.page + 1) : s,
+      ];
+      _syncBlankExtra(n + 1);
+    });
+    _afterPageStructureChanged(at);
+  }
+
+  void _deletePaperPage(int i) {
+    final n = _pageCount;
+    if (n <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('至少保留一頁')),
+      );
+      return;
+    }
+    if (i < 0 || i >= n) return;
+    _checkpoint();
+    setState(() {
+      _deselect();
+      _note.strokes = _remapPages(0, 0, drop: i);
+      _syncBlankExtra(n - 1);
+    });
+    _afterPageStructureChanged(min(i, n - 2));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已刪除第 ${i + 1} 頁（可撤銷）')),
+      );
+    }
+  }
+
+  void _movePage(int from, int to) {
+    if (_hasPdfPages) {
+      _moveBgPage(from, to);
+    } else {
+      _movePaperPage(from, to);
+    }
+  }
+
+  void _insertPage(int at) {
+    if (_hasPdfPages) {
+      _insertBlankPage(at);
+    } else {
+      _insertPaperBlankPage(at);
+    }
+  }
+
+  void _deletePage(int i) {
+    if (_hasPdfPages) {
+      _deleteBgPage(i);
+    } else {
+      _deletePaperPage(i);
+    }
+  }
+
+  /// 分頁條「第 X/Y 頁」入口：排序/插入/刪除（紙/PDF 共用）。
   Future<void> _openPageManager() async {
-    if (!_hasPdfPages) return;
+    if (_note.pageId == null && !_hasPdfPages) return;
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) {
+          // PDF 只列真實底圖頁；紙筆記按隱式頁數（含末尾空頁額度）。
+          final pages = _hasPdfPages ? _note.backgrounds.length : _pageCount;
           void act(void Function() op) {
             op();
             setSheet(() {});
@@ -665,10 +759,12 @@ class _EditorPageState extends State<EditorPage> {
                 Flexible(
                   child: ListView.builder(
                     shrinkWrap: true,
-                    itemCount: _note.backgrounds.length,
+                    itemCount: pages,
                     itemBuilder: (_, i) {
-                      final bg = _note.backgrounds[i];
-                      final n = _note.backgrounds.length;
+                      final bg = i < _note.backgrounds.length
+                          ? _note.backgrounds[i]
+                          : null;
+                      final n = pages;
                       final count = _note.strokes
                           .where((s) => s.page == i)
                           .length;
@@ -681,9 +777,11 @@ class _EditorPageState extends State<EditorPage> {
                         ),
                         title: Text(
                             '第 ${i + 1} 頁${i == _pageIndex ? '（當前）' : ''}'),
-                        subtitle: Text(bg.src == null
-                            ? '空白頁 · $count 筆'
-                            : 'PDF 第 ${bg.src! + 1} 頁 · $count 筆'),
+                        subtitle: Text(bg == null
+                            ? (count == 0 ? '空白頁' : '$count 筆')
+                            : bg.src == null
+                                ? '空白頁 · $count 筆'
+                                : 'PDF 第 ${bg.src! + 1} 頁 · $count 筆'),
                         onTap: () {
                           Navigator.pop(ctx);
                           _goPage(i);
@@ -695,27 +793,27 @@ class _EditorPageState extends State<EditorPage> {
                               icon: const Icon(Icons.arrow_upward),
                               tooltip: '上移',
                               onPressed: i > 0
-                                  ? () => act(() => _moveBgPage(i, i - 1))
+                                  ? () => act(() => _movePage(i, i - 1))
                                   : null,
                             ),
                             IconButton(
                               icon: const Icon(Icons.arrow_downward),
                               tooltip: '下移',
                               onPressed: i + 1 < n
-                                  ? () => act(() => _moveBgPage(i, i + 1))
+                                  ? () => act(() => _movePage(i, i + 1))
                                   : null,
                             ),
                             IconButton(
                               icon: const Icon(Icons.note_add_outlined),
                               tooltip: '在此頁後插入空白頁',
                               onPressed: () =>
-                                  act(() => _insertBlankPage(i + 1)),
+                                  act(() => _insertPage(i + 1)),
                             ),
                             IconButton(
                               icon: const Icon(Icons.delete_outline),
                               tooltip: '刪除此頁（含筆跡，可撤銷）',
                               onPressed: n > 1
-                                  ? () => act(() => _deleteBgPage(i))
+                                  ? () => act(() => _deletePage(i))
                                   : null,
                             ),
                           ],
@@ -955,6 +1053,7 @@ class _EditorPageState extends State<EditorPage> {
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
         images: List<NoteImage>.from(_note.images),
+        blankExtra: _blankExtra,
       );
 
   _HistoryEntry _entryWith(List<Stroke> strokes) => _HistoryEntry(
@@ -963,6 +1062,7 @@ class _EditorPageState extends State<EditorPage> {
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
         images: List<NoteImage>.from(_note.images),
+        blankExtra: _blankExtra,
       );
 
   void _restore(_HistoryEntry snap) {
@@ -974,6 +1074,7 @@ class _EditorPageState extends State<EditorPage> {
     _activeLayer =
         snap.active.clamp(0, _note.layerNames.length - 1);
     _note.images = List<NoteImage>.from(snap.images);
+    _blankExtra = snap.blankExtra;
     // 貼圖 meta 回來了：補解碼缺的（PNG 文件刪除時保留，讀得到）
     _loadNoteImages();
   }
@@ -2282,24 +2383,21 @@ class _EditorPageState extends State<EditorPage> {
                               ? () => _goPage(_pageIndex - 1)
                               : null,
                         ),
-                        if (_hasPdfPages)
-                          Tooltip(
-                            message: '頁面管理（排序/插入/刪除）',
-                            child: TextButton(
-                              style: TextButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 4),
-                                minimumSize: Size.zero,
-                                tapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                              ),
-                              onPressed: _openPageManager,
-                              child: Text(
-                                  '第 ${_pageIndex + 1}/$_pageCount 頁'),
+                        Tooltip(
+                          message: '頁面管理（排序/插入/刪除）',
+                          child: TextButton(
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
                             ),
-                          )
-                        else
-                          Text('第 ${_pageIndex + 1}/$_pageCount 頁'),
+                            onPressed: _openPageManager,
+                            child: Text(
+                                '第 ${_pageIndex + 1}/$_pageCount 頁'),
+                          ),
+                        ),
                         IconButton(
                           icon: const Icon(Icons.chevron_right),
                           tooltip: '下一頁',
