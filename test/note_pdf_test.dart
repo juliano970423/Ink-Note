@@ -59,6 +59,12 @@ void main() {
     expect(pages, 2);
   });
 
+  test('紙筆記空白尾頁一併匯出', () async {
+    final n = _note(pageId: 'A4')..extraPages = 2;
+    final bytes = await buildNotePdf(n);
+    expect(pdoc.PdfDocument.open(bytes).pageCount, 3);
+  });
+
   test('顯示→頁面映射：左上原點、y 上翻', () {
     // 210mm 寬頁（595.28pt）對 800px 顯示寬
     final map = ExportPageMap(

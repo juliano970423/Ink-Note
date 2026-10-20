@@ -80,22 +80,33 @@ Future<Uint8List> buildNotePdf(
         ),
       );
     }
+    // 相容舊資料：PDF 筆記理論上已在保存時把虛擬尾頁轉成 PageBg，
+    // 這裡再兜底補空白尾頁（尺寸套末頁）。
+    if (note.extraPages > 0) {
+      final last = note.backgrounds.last;
+      const wMm = 210.0;
+      final hMm = wMm * last.h / last.w;
+      final format = PdfPageFormat(wMm, hMm);
+      for (var i = 0; i < note.extraPages; i++) {
+        doc.addPage(pw.Page(pageFormat: format, build: (_) => pw.Container()));
+      }
+    }
     return doc.save();
   }
   final page = PageSize.byId(note.pageId);
   final doc = pw.Document();
   if (page != null) {
-    var maxPage = 0;
-    var any = false;
+    var maxPage = -1;
     for (final s in note.strokes) {
-      any = true;
       if (s.page > maxPage) maxPage = s.page;
     }
     for (final m in images) {
-      any = true;
       if (m.page > maxPage) maxPage = m.page;
     }
-    if (!any) {
+    if (note.extraPages > 0) {
+      maxPage += note.extraPages;
+    }
+    if (maxPage < 0) {
       doc.addPage(
         pw.Page(
           pageFormat: PdfPageFormat(page.wMm, page.hMm),

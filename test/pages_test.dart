@@ -4,6 +4,7 @@ import 'package:ink_notes/models/note.dart';
 import 'package:ink_notes/settings/app_settings.dart';
 import 'package:ink_notes/storage/memory_note_store.dart';
 import 'package:ink_notes/ui/editor_page.dart';
+import 'package:ink_notes/ui/eraser_icons.dart';
 
 Note _a4note() => Note(
       id: 'a1b2',
@@ -250,5 +251,111 @@ void main() {
     await tester.pump();
     expect(find.text('第 1/1 頁'), findsOneWidget);
     expect(view, ViewMode.normal);
+  });
+
+  testWidgets('紙筆記頁面管理：圖片隨頁搬/刪，undo 還原；尾頁存檔', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    note.images.add(const NoteImage(
+        id: 'im1', page: 1, x: 100, y: 100, w: 40, h: 40));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 1/2 頁'));
+    await tester.pumpAndSettle();
+    // 第 2 頁上移：筆跡與圖片頁號一起搬
+    await tester.tap(find.byIcon(Icons.arrow_upward).last);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect([for (final s in loaded.strokes) s.page], [1, 0]);
+    expect(loaded.images.single.page, 0);
+    // 刪第 1 頁（有筆跡＋圖片）：一起丟
+    await tester.tap(find.byIcon(Icons.delete_outline).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect([for (final s in loaded.strokes) s.page], [0]);
+    expect(loaded.images, isEmpty);
+    // 關閉頁面管理 → undo：筆跡頁號與圖片都回來
+    await tester.tapAt(const Offset(400, 60));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    expect([for (final s in loaded.strokes) s.page], [1, 0]);
+    expect(loaded.images.single.page, 0);
+  });
+
+  testWidgets('紙筆記新增尾頁自動存檔，重開頁數不縮', (tester) async {
+    final store = MemoryNoteStore();
+    await store.save(_a4note());
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/1 頁'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+    expect(find.text('第 2/2 頁'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+    final saved = await store.load('a1b2');
+    expect(saved.extraPages, 1);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              key: UniqueKey(),
+              repo: store, settings: AppSettings(), note: saved)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/2 頁'), findsOneWidget);
+  });
+
+  testWidgets('圈選操作條：第 2 頁用堆疊座標，不跑到畫面頂端', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 1/2 頁'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 2 頁'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(LassoIcon));
+    await tester.pump();
+    final g = await tester.startGesture(const Offset(70, 150));
+    for (final p in const [
+      Offset(230, 150),
+      Offset(230, 220),
+      Offset(70, 220),
+      Offset(70, 150),
+    ]) {
+      await g.moveTo(p);
+    }
+    await g.up();
+    await tester.pump();
+    expect(find.byIcon(Icons.copy), findsOneWidget);
+    final bar = tester.getTopLeft(find.byIcon(Icons.copy));
+    // 舊算法用頁內座標：這條會 clamp 到 y≈8（蓋住工具欄）
+    expect(bar.dy, greaterThan(60));
+    expect(bar.dy, lessThan(250));
+    expect(bar.dx, greaterThanOrEqualTo(8));
+    expect(bar.dx, lessThan(700));
   });
 }

@@ -164,6 +164,10 @@ void main() {
     expect(loaded.backgrounds.last.src, isNull);
     expect(loaded.backgrounds.last.key, isNotEmpty);
     expect(find.text('第 3/3 頁'), findsOneWidget);
+    // 加頁要排自動存檔（以前只存在記憶體，重開就少一頁）
+    await tester.pump(const Duration(seconds: 3));
+    final saved = await store.load('c3d4');
+    expect(saved.backgrounds.length, 3);
   });
 
   testWidgets('page manager: move down reorders + strokes follow',
@@ -223,6 +227,14 @@ void main() {
     expect(loaded.backgrounds.length, 1);
     expect(loaded.backgrounds.single.key, 'k1');
     expect(loaded.strokes, isEmpty);
+    // undo 要把底圖頁一起還原（不只是筆跡）
+    await tester.tapAt(const Offset(400, 60));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    expect([for (final b in loaded.backgrounds) b.key], ['k0', 'k1']);
+    expect(loaded.strokes.single.page, 0);
+    expect(find.text('第 1/2 頁'), findsOneWidget);
   });
 
   test('bgUpgradeWidth: 檔位數學', () {

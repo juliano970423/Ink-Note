@@ -319,8 +319,8 @@ void main() {
     }
     await g.up();
     await tester.pump();
-    // 筆跡操作條＋圖片操作條各一個刪除鍵＝兩邊都選中了
-    expect(find.byIcon(Icons.delete_outline), findsNWidgets(2));
+    // 筆跡＋圖片共用一條合併操作條（不再互相覆蓋）
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
     // 框內拖動（+40,+0）：筆跡與圖片同向平移
     final sx0 = loaded.strokes.first.points.first.x;
     final ix0 = loaded.images.first.x;
@@ -565,5 +565,22 @@ void main() {
     await tester.pump();
     expect(find.text('根筆記'), findsNothing);
     expect(find.text('工作筆記'), findsOneWidget);
+  });
+
+  testWidgets('新資料夾即時落盤，重開首頁仍在', (tester) async {
+    final store = MemoryNoteStore();
+    await _pumpNarrow(tester, store);
+    await tester.tap(find.byTooltip('新資料夾'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.descendant(
+            of: find.byType(AlertDialog), matching: find.byType(TextField)),
+        '空資料夾');
+    await tester.tap(find.text('建立'));
+    await tester.pumpAndSettle();
+    expect(await store.listFolders(), contains('空資料夾'));
+    // 重開首頁：空資料夾仍在（不是只存在這次的 _folders 裡）
+    await _pumpNarrow(tester, store);
+    expect(find.widgetWithText(FilterChip, '空資料夾'), findsOneWidget);
   });
 }

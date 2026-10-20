@@ -166,6 +166,13 @@ class NoteRepository implements NoteStore {
   }
 
   @override
+  Future<void> ensureFolder(String folder) async {
+    if (folder.isEmpty) return;
+    await ensureDirs();
+    await dirForFolder(folder).create(recursive: true);
+  }
+
+  @override
   Future<void> deleteFolder(String folder) async {
     final dir = dirForFolder(folder);
     if (!await dir.exists()) return;

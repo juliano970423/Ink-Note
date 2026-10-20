@@ -61,4 +61,11 @@ void main() {
     await store.delete('a1b2');
     expect(await store.loadImage('a1b2', 'im1'), isNull);
   });
+
+  test('ensureFolder 空資料夾保留，deleteFolder 移除', () async {
+    await store.ensureFolder('工作');
+    expect(await store.listFolders(), ['工作']);
+    await store.deleteFolder('工作');
+    expect(await store.listFolders(), isEmpty);
+  });
 }

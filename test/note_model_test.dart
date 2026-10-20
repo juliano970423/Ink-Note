@@ -39,15 +39,18 @@ void main() {
       updatedAt: DateTime.utc(2026, 10, 5),
       folder: '工作',
       pageId: 'A4',
+      extraPages: 2,
     );
     final rt = Note.decode(note.encode());
     expect(rt.folder, '工作');
     expect(rt.pageId, 'A4');
+    expect(rt.extraPages, 2);
     // 舊文件：無 folder/page 欄位 → 根目錄/無限畫布
     final legacy = Note.decode(
         '{"version":1,"id":"ab12","title":"old","createdAt":"2026-10-05T17:30:00Z","updatedAt":"2026-10-05T17:30:00Z","strokes":[]}');
     expect(legacy.folder, '');
     expect(legacy.pageId, isNull);
+    expect(legacy.extraPages, 0);
     expect(Note.sanitizeFolder('  '), '');
     expect(Note.sanitizeFolder('a/b'), 'a_b');
     expect(PageSize.byId('A4')!.wMm, 210);

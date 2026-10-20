@@ -47,6 +47,9 @@ abstract class NoteStore {
   /// 列出所有資料夾名（已排序，不含根目錄）。
   Future<List<String>> listFolders();
 
+  /// 建立資料夾（已存在則無事；空名忽略）。空資料夾也要能落盤/重載後還在。
+  Future<void> ensureFolder(String folder);
+
   /// 刪除空資料夾（非空則拋錯；先把筆記搬走再調用）。
   Future<void> deleteFolder(String folder);
 }

@@ -13,6 +13,7 @@ class MemoryNoteStore implements NoteStore {
   final Map<String, Map<String, Uint8List>> _backgrounds = {};
   final Map<String, Uint8List> _originalPdfs = {};
   final Map<String, Map<String, Uint8List>> _images = {};
+  final Set<String> _folders = {};
 
   @override
   Future<void> save(Note note) async {
@@ -121,7 +122,7 @@ class MemoryNoteStore implements NoteStore {
 
   @override
   Future<List<String>> listFolders() async {
-    final folders = <String>{};
+    final folders = <String>{..._folders};
     for (final raw in _notes.values) {
       final f = Note.decode(raw).folder;
       if (f.isNotEmpty) folders.add(f);
@@ -131,12 +132,19 @@ class MemoryNoteStore implements NoteStore {
   }
 
   @override
+  Future<void> ensureFolder(String folder) async {
+    if (folder.isEmpty) return;
+    _folders.add(folder);
+  }
+
+  @override
   Future<void> deleteFolder(String folder) async {
     for (final raw in _notes.values) {
       if (Note.decode(raw).folder == folder) {
         throw StateError('folder not empty: $folder');
       }
     }
+    _folders.remove(folder);
   }
 }
 

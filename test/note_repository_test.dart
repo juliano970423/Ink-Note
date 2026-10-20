@@ -135,6 +135,16 @@ void main() {
     expect(await repo.listFolders(), isEmpty);
   });
 
+  test('ensureFolder 建空資料夾落盤，重開仍在', () async {
+    await repo.ensureFolder('空資料夾');
+    expect(await repo.listFolders(), ['空資料夾']);
+    // 重開 repository（模擬 App 重啟）仍在
+    final reopened = NoteRepository(tmp);
+    expect(await reopened.listFolders(), ['空資料夾']);
+    await reopened.deleteFolder('空資料夾');
+    expect(await reopened.listFolders(), isEmpty);
+  });
+
   test('改名保存：舊文件名刪除、新文件名寫入', () async {
     await repo.save(_note('a3f8c2', '舊標題'));
     final n2 = _note('a3f8c2', '新標題');

@@ -301,8 +301,17 @@ class _HomePageState extends State<HomePage> {
     if (name == null || name.trim().isEmpty) return;
     final folder = Note.sanitizeFolder(name);
     if (folder.isEmpty) return;
-    // 資料夾以筆記存在為準，這裡直接切換篩選；
-    // 第一篇筆記移入/建入時目錄自動產生。
+    if (!mounted) return;
+    try {
+      await widget.repo.ensureFolder(folder);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('建立資料夾失敗：$e')),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     setState(() {
       if (!_folders.contains(folder)) _folders.add(folder);

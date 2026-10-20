@@ -307,6 +307,9 @@ class Note {
   String folder;
   /// 頁面尺寸 id（見 [PageSize]）；null = 無限畫布。
   String? pageId;
+  /// 末尾空白頁數（紙筆記的隱式頁：頁面只在有筆跡/圖片時才落資料）。
+  /// PDF 筆記的空白尾頁是真的 PageBg，這裡恆為 0。
+  int extraPages;
   /// 圖層名（下標 = 圖層 id，0 最底）。空 = 單圖層。
   List<String> layerNames;
   /// 隱藏的圖層 id。
@@ -325,6 +328,7 @@ class Note {
     List<Stroke>? strokes,
     this.folder = '',
     this.pageId,
+    this.extraPages = 0,
     List<String>? layerNames,
     List<int>? hiddenLayers,
     List<PageBg>? backgrounds,
@@ -344,6 +348,7 @@ class Note {
         'updatedAt': updatedAt.toUtc().toIso8601String(),
         'folder': folder,
         if (pageId != null) 'page': pageId,
+        if (extraPages > 0) 'extraPages': extraPages,
         'layerNames': layerNames,
         'hiddenLayers': hiddenLayers,
         'backgrounds': backgrounds.map((e) => e.toJson()).toList(),
@@ -355,15 +360,22 @@ class Note {
     final strokes = (json['strokes'] as List? ?? [])
         .map((e) => Stroke.fromJson(e as Map<String, dynamic>))
         .toList();
+    final images = (json['images'] as List?)
+            ?.map((e) => NoteImage.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        <NoteImage>[];
     final bgs = (json['backgrounds'] as List? ?? [])
         .map((e) => PageBg.fromJson(e as Map<String, dynamic>))
         .toList();
-    // PDF 筆記：筆跡落在底圖列表之外的頁（舊版虛擬空白頁），補成真正的
+    // PDF 筆記：筆跡/圖片落在底圖列表之外的頁（舊版虛擬空白頁），補成真正的
     // 空白頁條目（鍵 `x{頁碼}` 穩定，尺寸套末頁），版式/匯出不再有特例。
     if (bgs.isNotEmpty) {
       var top = -1;
       for (final s in strokes) {
         if (s.page > top) top = s.page;
+      }
+      for (final m in images) {
+        if (m.page > top) top = m.page;
       }
       if (top >= bgs.length) {
         final last = bgs.last;
@@ -381,10 +393,8 @@ class Note {
       // 舊文件無此欄位 → 預設根目錄/無限畫布（向前相容，不升級 version）。
       folder: json['folder'] as String? ?? '',
       pageId: json['page'] as String?,
-      images: (json['images'] as List?)
-              ?.map((e) => NoteImage.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          <NoteImage>[],
+      extraPages: ((json['extraPages'] as num?)?.toInt() ?? 0).clamp(0, 100000),
+      images: images,
       layerNames: (json['layerNames'] as List?)
               ?.map((e) => e.toString())
               .toList() ??

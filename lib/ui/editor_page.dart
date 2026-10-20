@@ -25,7 +25,8 @@ import 'ink_canvas.dart';
 /// 視圖：正常 / 全屏（留工具欄+頁碼，收側欄） / 沉浸（什麼都不顯示）。
 enum ViewMode { normal, fullscreen, zen }
 
-/// 撤銷快照：筆跡 + 圖層名 + 隱藏 + 使用中圖層 + 貼圖 meta 一起撤銷。
+/// 撤銷快照：筆跡 + 圖層名 + 隱藏 + 使用中圖層 + 貼圖 meta +
+/// PDF 底圖列表 + 末尾空頁額度一起撤銷。
 /// 貼圖 PNG 文件刪除時保留（孤兒隨筆記刪除一起清），undo 回來直接能讀。
 class _HistoryEntry {
   final List<Stroke> strokes;
@@ -33,6 +34,7 @@ class _HistoryEntry {
   final List<int> hidden;
   final int active;
   final List<NoteImage> images;
+  final List<PageBg> backgrounds;
 
   /// 紙筆記的末尾空頁額度（頁面管理增刪要靠 undo 還原）。
   final int blankExtra;
@@ -43,6 +45,7 @@ class _HistoryEntry {
     required this.hidden,
     required this.active,
     required this.images,
+    required this.backgrounds,
     required this.blankExtra,
   });
 }
@@ -154,6 +157,9 @@ class _EditorPageState extends State<EditorPage> {
       size: _brushSize,
     );
     _titleCtrl = TextEditingController(text: _note.title);
+    _blankExtra = _note.extraPages;
+    // 舊/異常資料同時有底圖與尾頁額度：統一轉成真頁，避免頁框數量對不上
+    _materializeExtraPages();
     _refreshBgImages();
     _loadNoteImages();
     if (_hasPdfPages) {
@@ -443,6 +449,9 @@ class _EditorPageState extends State<EditorPage> {
     try {
       _note.title =
           _titleCtrl.text.trim().isEmpty ? 'untitled' : _titleCtrl.text.trim();
+      // PDF 筆記：快掃/加頁開出來的虛擬尾頁，存檔時轉成真 PageBg
+      _materializeExtraPages();
+      _note.extraPages = _blankExtra;
       await widget.repo.save(_note);
       // 保存時渲染當前頁縮圖 PNG 存同目錄（底圖筆記帶上底圖）
       try {
@@ -494,7 +503,11 @@ class _EditorPageState extends State<EditorPage> {
     for (final s in _note.strokes) {
       if (s.page > top) top = s.page;
     }
-    // 筆跡全空也有 1 頁（0 頁會讓紙框上下顛倒，clamp 炸掉）
+    // 只有圖片沒有筆跡的頁也算一頁（否則重開後圖會落在頁框外不顯示）
+    for (final m in _note.images) {
+      if (m.page > top) top = m.page;
+    }
+    // 筆跡/圖片全空也有 1 頁（0 頁會讓紙框上下顛倒，clamp 炸掉）
     var count = max(top + 1 + _blankExtra, 1);
     // PDF 底圖頁至少全在
     if (_note.backgrounds.isNotEmpty) {
@@ -507,7 +520,8 @@ class _EditorPageState extends State<EditorPage> {
     var target = i.clamp(0, _pageCount);
     if (target == _pageIndex) return;
     // 落到現有範圍外 = 開新空頁（+ 按鈕/快掃下一頁）
-    if (target >= _pageCount) {
+    final spawned = target >= _pageCount;
+    if (spawned) {
       _blankExtra += target - _pageCount + 1;
       target = _pageCount - 1;
     }
@@ -525,6 +539,8 @@ class _EditorPageState extends State<EditorPage> {
       }
     });
     _canvasKey.currentState?.invalidateCache();
+    // 新開的空頁要落盤（紙筆記記在 extraPages；PDF 保存時轉成 PageBg）
+    if (spawned) _scheduleAutosave();
     // 跳到的頁若還沒像素（懶加載），後台填上
     _fillMissingBg();
   }
@@ -560,6 +576,27 @@ class _EditorPageState extends State<EditorPage> {
     return out;
   }
 
+  /// 圖片頁號跟著頁面一起搬/丟（與 [_remapPages] 同規則）。
+  /// PNG 文件不刪：undo 恢復 meta 後直接能讀。
+  List<NoteImage> _remapImagePages(int from, int to, {int? drop}) {
+    final out = <NoteImage>[];
+    for (final m in _note.images) {
+      var p = m.page;
+      if (drop != null) {
+        if (p == drop) continue;
+        if (p > drop) p -= 1;
+      } else if (p == from) {
+        p = to;
+      } else if (from < to && p > from && p <= to) {
+        p -= 1;
+      } else if (to < from && p >= to && p < from) {
+        p += 1;
+      }
+      out.add(p == m.page ? m : m.copyWith(page: p));
+    }
+    return out;
+  }
+
   /// 頁面結構變化後的統一收尾：視角夾回、底圖按鍵重載、重建、存檔。
   void _afterPageStructureChanged(int newFocus) {
     setState(() {
@@ -571,6 +608,18 @@ class _EditorPageState extends State<EditorPage> {
     _scheduleAutosave();
   }
 
+  /// PDF 筆記：把隱式空頁額度轉成真 PageBg（保存/匯出時呼叫）。
+  /// 紙筆記走 [Note.extraPages]，不需要這個。
+  void _materializeExtraPages() {
+    if (_note.backgrounds.isEmpty || _blankExtra <= 0) return;
+    final last = _note.backgrounds.last;
+    for (var i = 0; i < _blankExtra; i++) {
+      _note.backgrounds.add(PageBg(w: last.w, h: last.h, key: Note.newId()));
+    }
+    _blankExtra = 0;
+    _note.extraPages = 0;
+  }
+
   void _moveBgPage(int from, int to) {
     final n = _note.backgrounds.length;
     if (from == to || from < 0 || to < 0 || from >= n || to >= n) return;
@@ -580,6 +629,7 @@ class _EditorPageState extends State<EditorPage> {
       final bg = _note.backgrounds.removeAt(from);
       _note.backgrounds.insert(to, bg);
       _note.strokes = _remapPages(from, to);
+      _note.images = _remapImagePages(from, to);
     });
     _afterPageStructureChanged(to);
   }
@@ -600,6 +650,10 @@ class _EditorPageState extends State<EditorPage> {
         out.add(s.page >= at ? s.copyWith(page: s.page + 1) : s);
       }
       _note.strokes = out;
+      _note.images = [
+        for (final m in _note.images)
+          m.page >= at ? m.copyWith(page: m.page + 1) : m,
+      ];
     });
     _afterPageStructureChanged(at);
   }
@@ -616,6 +670,7 @@ class _EditorPageState extends State<EditorPage> {
       _deselect();
       _note.backgrounds.removeAt(i);
       _note.strokes = _remapPages(0, 0, drop: i);
+      _note.images = _remapImagePages(0, 0, drop: i);
       // 底圖 PNG 按 key 留著不刪：undo 恢復頁面時底圖還在；
       // 筆記刪除時 `_bg*.png` 一起清。
     });
@@ -631,6 +686,7 @@ class _EditorPageState extends State<EditorPage> {
   void _addPageEnd() {
     if (!_hasPdfPages) {
       _goPage(_pageCount);
+      _scheduleAutosave();
       return;
     }
     _checkpoint();
@@ -641,6 +697,7 @@ class _EditorPageState extends State<EditorPage> {
     });
     _goPage(_note.backgrounds.length - 1);
     _refreshBgImages();
+    _scheduleAutosave();
   }
 
   // ---------- 紙筆記頁面管理 ----------
@@ -653,6 +710,9 @@ class _EditorPageState extends State<EditorPage> {
     for (final s in _note.strokes) {
       if (s.page > top) top = s.page;
     }
+    for (final m in _note.images) {
+      if (m.page > top) top = m.page;
+    }
     _blankExtra = max(0, count - (top + 1));
   }
 
@@ -663,6 +723,7 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       _deselect();
       _note.strokes = _remapPages(from, to);
+      _note.images = _remapImagePages(from, to);
       _syncBlankExtra(n);
     });
     _afterPageStructureChanged(to);
@@ -678,6 +739,10 @@ class _EditorPageState extends State<EditorPage> {
       _note.strokes = [
         for (final s in _note.strokes)
           s.page >= at ? s.copyWith(page: s.page + 1) : s,
+      ];
+      _note.images = [
+        for (final m in _note.images)
+          m.page >= at ? m.copyWith(page: m.page + 1) : m,
       ];
       _syncBlankExtra(n + 1);
     });
@@ -697,6 +762,7 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       _deselect();
       _note.strokes = _remapPages(0, 0, drop: i);
+      _note.images = _remapImagePages(0, 0, drop: i);
       _syncBlankExtra(n - 1);
     });
     _afterPageStructureChanged(min(i, n - 2));
@@ -1053,6 +1119,7 @@ class _EditorPageState extends State<EditorPage> {
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
         images: List<NoteImage>.from(_note.images),
+        backgrounds: List<PageBg>.from(_note.backgrounds),
         blankExtra: _blankExtra,
       );
 
@@ -1062,6 +1129,7 @@ class _EditorPageState extends State<EditorPage> {
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
         images: List<NoteImage>.from(_note.images),
+        backgrounds: List<PageBg>.from(_note.backgrounds),
         blankExtra: _blankExtra,
       );
 
@@ -1074,7 +1142,10 @@ class _EditorPageState extends State<EditorPage> {
     _activeLayer =
         snap.active.clamp(0, _note.layerNames.length - 1);
     _note.images = List<NoteImage>.from(snap.images);
+    _note.backgrounds = List<PageBg>.from(snap.backgrounds);
     _blankExtra = snap.blankExtra;
+    _note.extraPages = _blankExtra;
+    _pageIndex = _pageIndex.clamp(0, max(_pageCount - 1, 0));
     // 貼圖 meta 回來了：補解碼缺的（PNG 文件刪除時保留，讀得到）
     _loadNoteImages();
   }
@@ -1094,6 +1165,11 @@ class _EditorPageState extends State<EditorPage> {
     _pruneSelection();
     _reclampPan();
     _canvasKey.currentState?.invalidateCache();
+    if (_hasPdfPages) {
+      // 頁面管理（排序/增刪）的底圖也要一起回到快照樣子
+      _reloadBgImages();
+      _fillMissingBg();
+    }
     _scheduleAutosave();
   }
 
@@ -1105,6 +1181,10 @@ class _EditorPageState extends State<EditorPage> {
     _pruneSelection();
     _reclampPan();
     _canvasKey.currentState?.invalidateCache();
+    if (_hasPdfPages) {
+      _reloadBgImages();
+      _fillMissingBg();
+    }
     _scheduleAutosave();
   }
 
@@ -1125,6 +1205,9 @@ class _EditorPageState extends State<EditorPage> {
       var m = -1;
       for (final s0 in _note.strokes) {
         if (s0.page > m) m = s0.page;
+      }
+      for (final m0 in _note.images) {
+        if (m0.page > m) m = m0.page;
       }
       if (sl.page > m) _blankExtra = max(0, m + _blankExtra - sl.page);
     }
@@ -1360,23 +1443,6 @@ class _EditorPageState extends State<EditorPage> {
   void _onImageDragEnd() {
     if (!_imgSessionActive) return;
     _imgSessionActive = false;
-    _scheduleAutosave();
-  }
-
-  /// 刪除選中圖片（圖片操作條用；PNG 文件保留供 undo，隨筆記刪除一起清）。
-  Future<void> _deleteImages() async {
-    if (_selectedImageIds.isEmpty) return;
-    _checkpoint();
-    final ids = Set<String>.from(_selectedImageIds);
-    for (final id in ids) {
-      _noteImgs.remove(id)?.dispose();
-    }
-    setState(() {
-      _note.images.removeWhere((m) => ids.contains(m.id));
-      _selectedImageIds = {};
-    });
-    _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
-    _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
 
@@ -2030,6 +2096,9 @@ class _EditorPageState extends State<EditorPage> {
     if (_exporting) return;
     setState(() => _exporting = true);
     try {
+      // 快掃/加頁開出來的虛擬尾頁也要進 PDF（PDF 筆記轉成真頁）
+      _note.extraPages = _blankExtra;
+      _materializeExtraPages();
       final bgs = <int, Uint8List>{};
       for (var i = 0; i < _note.backgrounds.length; i++) {
         final bytes = await widget.repo.loadBackground(_note.id, _bgKey(i));
@@ -2128,6 +2197,9 @@ class _EditorPageState extends State<EditorPage> {
                                 : _note.layerNames.length - 1;
                           });
                           _titleCtrl.text = _note.title;
+                          _blankExtra = _note.extraPages;
+                          _pageIndex =
+                              _pageIndex.clamp(0, max(_pageCount - 1, 0));
                           _reclampPan();
                           _refreshBgImages();
                           _canvasKey.currentState?.invalidateCache();
@@ -2207,6 +2279,12 @@ class _EditorPageState extends State<EditorPage> {
     final zen = _view == ViewMode.zen;
     final bounds = _selectionBounds;
     final imgBox = _selectedImageStacked();
+    // 操作條包住「選中筆跡 ∪ 選中圖片」；座標都用堆疊座標，第 2 頁起才不會算到頁外。
+    var actionBox = _selectionRect;
+    if (imgBox != null) {
+      actionBox =
+          actionBox == null ? imgBox : actionBox.expandToInclude(imgBox);
+    }
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.keyV, control: true):
@@ -2290,13 +2368,13 @@ class _EditorPageState extends State<EditorPage> {
                 ),
               ),
             ),
-          // 圈選操作條
-          if (!zen && bounds != null)
+          // 圈選/圖片操作條（筆跡與圖片可同時選中，共用一條）
+          if (!zen && actionBox != null)
             Positioned(
-              left: (bounds.left * _scale + _panOffset.dx)
-                  .clamp(8, double.infinity),
-              top: (bounds.top * _scale + _panOffset.dy - 52)
-                  .clamp(8, double.infinity),
+              left: (actionBox.left * _scale + _panOffset.dx).clamp(
+                  8.0, max(8.0, _viewportSize.width - 168)),
+              top: (actionBox.top * _scale + _panOffset.dy - 52).clamp(
+                  8.0, max(8.0, _viewportSize.height - 56)),
               child: Card(
                 color: scheme.surfaceContainerHigh.withValues(alpha: 0.92),
                 child: Row(
@@ -2315,34 +2393,8 @@ class _EditorPageState extends State<EditorPage> {
                     IconButton(
                       icon: const Icon(Icons.close),
                       tooltip: '取消選擇',
-                      onPressed: () => setState(_deselect),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          // 圖片操作條（選中圖片時顯示在圖上方：刪除＋取消）
-          if (!zen && imgBox != null)
-            Positioned(
-              left: (imgBox.left * _scale + _panOffset.dx)
-                  .clamp(8, double.infinity),
-              top: (imgBox.top * _scale + _panOffset.dy - 52)
-                  .clamp(8, double.infinity),
-              child: Card(
-                color: scheme.surfaceContainerHigh.withValues(alpha: 0.92),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: '刪除圖片',
-                      onPressed: _deleteImages,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      tooltip: '取消選擇',
                       onPressed: () => setState(() {
-                        _selectedImageIds = {};
+                        _deselect();
                         _canvasKey.currentState?.deselectImage();
                       }),
                     ),
