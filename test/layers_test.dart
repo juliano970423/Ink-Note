@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_notes/models/note.dart';
@@ -85,10 +87,13 @@ void main() {
     await _openLayers(tester);
     await tester.tap(find.byIcon(Icons.visibility_outlined).first);
     await tester.pumpAndSettle();
+    // 再把使用中層切到可見的圖層 1：隱藏層即使還是使用中也不該被擦到
+    await tester.tap(find.text('圖層 1'));
+    await tester.pumpAndSettle();
     await _closeLayers(tester);
     await tester.pumpAndSettle();
 
-    // 按筆畫橡皮點兩筆：可見的沒，隱藏的還在
+    // 按筆畫橡皮點兩筆：使用中可見層被擦，隱藏層還在
     await tester.tap(find.byType(StrokeEraserIcon));
     await tester.pump();
     await tester.tapAt(const Offset(400, 400));
@@ -97,6 +102,112 @@ void main() {
     await tester.pump();
     expect(loaded.strokes.length, 1);
     expect(loaded.strokes.first.layer, 1);
+  });
+
+  testWidgets('使用中圖層隔離：按筆畫橡皮不擦別層', (tester) async {
+    final loaded = await _pumpEditor(tester);
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    await _openLayers(tester);
+    await tester.tap(find.text('新增'));
+    await tester.pumpAndSettle();
+    await _closeLayers(tester);
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(500, 500));
+    await tester.pump();
+    expect(loaded.strokes.map((s) => s.layer).toList(), [0, 1]);
+
+    // 使用中層 = 圖層 2；點兩筆只刪圖層 2
+    await tester.tap(find.byType(StrokeEraserIcon));
+    await tester.pump();
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    await tester.tapAt(const Offset(500, 500));
+    await tester.pump();
+    expect(loaded.strokes.length, 1);
+    expect(loaded.strokes.first.layer, 0);
+  });
+
+  testWidgets('使用中圖層隔離：圈選只圈使用中層', (tester) async {
+    final loaded = await _pumpEditor(tester);
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    await _openLayers(tester);
+    await tester.tap(find.text('新增'));
+    await tester.pumpAndSettle();
+    await _closeLayers(tester);
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(500, 500));
+    await tester.pump();
+    expect(loaded.strokes.map((s) => s.layer).toList(), [0, 1]);
+
+    // 使用中層 = 圖層 2；框住兩筆，操作條只處理圖層 2
+    await tester.tap(find.byType(LassoIcon));
+    await tester.pump();
+    final g = await tester.startGesture(const Offset(380, 380));
+    for (final p in const [
+      Offset(520, 380),
+      Offset(520, 520),
+      Offset(380, 520),
+      Offset(380, 380),
+    ]) {
+      await g.moveTo(p);
+    }
+    await g.up();
+    await tester.pump();
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.delete_outline));
+    await tester.pump();
+    expect(loaded.strokes.length, 1);
+    expect(loaded.strokes.first.layer, 0);
+  });
+
+  testWidgets('使用中圖層隔離：圖片只認使用中層', (tester) async {
+    final store = MemoryNoteStore();
+    final note = Note(
+      id: 'a1b2',
+      title: 't',
+      createdAt: DateTime.utc(2026, 10, 5),
+      updatedAt: DateTime.utc(2026, 10, 5),
+      folder: '',
+      layerNames: ['下層', '上層'],
+      images: const [
+        NoteImage(
+            id: 'im0', page: 0, x: 100, y: 100, w: 100, h: 100, layer: 0),
+        NoteImage(
+            id: 'im1', page: 0, x: 300, y: 300, w: 100, h: 100, layer: 1),
+      ],
+    );
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: EditorPage(repo: store, settings: AppSettings(), note: loaded),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(LassoIcon));
+    await tester.pump();
+    Future<void> stylusTap(Offset p) async {
+      final g = await tester.startGesture(p,
+          kind: ui.PointerDeviceKind.stylus);
+      await g.up();
+      await tester.pump();
+    }
+
+    // 使用中層 = 上層；點下層圖片不選、不出操作條
+    await stylusTap(const Offset(150, 150));
+    expect(find.byIcon(Icons.delete_outline), findsNothing);
+    expect(loaded.images.length, 2);
+
+    // 點上層圖片才選中，刪除只掉上層
+    await stylusTap(const Offset(350, 350));
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.delete_outline));
+    await tester.pump();
+    expect(loaded.images.length, 1);
+    expect(loaded.images.single.layer, 0);
   });
 
   testWidgets('合併到下層 → 一層，撤銷回來', (tester) async {

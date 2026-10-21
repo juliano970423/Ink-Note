@@ -16,6 +16,12 @@ enum ToolMode { pen, strokeEraser, pixelEraser, lasso }
 /// 筆型：鋼筆刷（壓感填充）/ 虛線筆 / 螢光筆（半透明寬線墊底）。
 enum PenType { brush, dashed, highlighter }
 
+/// 形狀修正支援的筆型；修正後保留原筆型（虛線／螢光不會變實線）。
+bool canSnapShape(PenType type) =>
+    type == PenType.brush ||
+    type == PenType.dashed ||
+    type == PenType.highlighter;
+
 extension PenTypeLabel on PenType {
   String get label {
     switch (this) {
@@ -262,7 +268,7 @@ double pathLength(List<Offset> pts) {
 
 /// 形狀快照：直線 / 圓 / 矩形（$1 識別庫判定 + 幾何兜底）。
 /// 只有收筆前停頓滿 1s（[dwellMs] ≥ 1000，抬起時刻減末點時刻）才判定，
-/// 快掃不停留的不碰。不像就原樣返回 [s]。只對筆刷筆调用。
+/// 快掃不停留的不碰。不像就原樣返回 [s]。呼叫端先用 [canSnapShape] 過濾筆型。
 /// 注意 [dwellMs] 是真實停頓時長（兩個絕對事件時間戳之差），不要傳時間戳。
 List<Stroke> snapShape(Stroke s, {required int dwellMs}) {
   final pts = s.points.map((p) => Offset(p.x, p.y)).toList();
@@ -975,6 +981,24 @@ Path _centerPath(Stroke s) {
   return path;
 }
 
+class _StrokePathCache {
+  final String key;
+  final Path path;
+
+  const _StrokePathCache(this.key, this.path);
+}
+
+final Expando<_StrokePathCache> _strokePathCache =
+    Expando<_StrokePathCache>('strokePath');
+
+Path _cachedStrokePath(Stroke s, String key, Path Function() build) {
+  final hit = _strokePathCache[s];
+  if (hit != null && hit.key == key) return hit.path;
+  final path = build();
+  _strokePathCache[s] = _StrokePathCache(key, path);
+  return path;
+}
+
 /// 在 dart:ui 畫布上繪製單筆（縮圖 / PDF / Picture 快取共用）。
 /// 壓感取自存好的 `p`，不重算。螢光透明度取自存好的 `alpha`。
 /// 輪廓參數優先存檔凍結值（thinning/streamline/hlw 非 null 時）：
@@ -996,15 +1020,22 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       );
       return;
     }
-    final path = Path()
-      ..moveTo(s.points.first.x, s.points.first.y);
-    for (var i = 1; i < s.points.length; i++) {
-      path.lineTo(s.points[i].x, s.points[i].y);
-    }
-    final first = s.points.first, last = s.points.last;
-    if ((Offset(first.x, first.y) - Offset(last.x, last.y)).distance < 1e-6) {
-      path.close();
-    }
+    final path = _cachedStrokePath(
+        s,
+        'geometric|${s.points.length}',
+        () {
+          final p = Path()
+            ..moveTo(s.points.first.x, s.points.first.y);
+          for (var i = 1; i < s.points.length; i++) {
+            p.lineTo(s.points[i].x, s.points[i].y);
+          }
+          final first = s.points.first, last = s.points.last;
+          if ((Offset(first.x, first.y) - Offset(last.x, last.y)).distance <
+              1e-6) {
+            p.close();
+          }
+          return p;
+        });
     canvas.drawPath(
       path,
       Paint()
@@ -1028,8 +1059,10 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       );
       return;
     }
+    final path = _cachedStrokePath(
+        s, 'highlighter|${s.points.length}', () => _centerPath(s));
     canvas.drawPath(
-      _centerPath(s),
+      path,
       Paint()
         ..color = colorFromHex(s.color).withValues(alpha: alpha)
         ..style = PaintingStyle.stroke
@@ -1050,11 +1083,19 @@ void paintStroke(ui.Canvas canvas, Stroke s,
       return;
     }
     // 先按 2px 等弧重採樣：虛線節距與書寫速度無關，顆顆等長
-    var pts = s.points.map((e) => Offset(e.x, e.y)).toList();
-    final len = pathLength(pts);
-    if (len > 0) pts = resamplePoints(pts, (len / 2).ceil().clamp(2, 4000));
+    final path = _cachedStrokePath(
+        s,
+        'dashed|${s.size}|${s.points.length}',
+        () {
+          var pts = s.points.map((e) => Offset(e.x, e.y)).toList();
+          final len = pathLength(pts);
+          if (len > 0) {
+            pts = resamplePoints(pts, (len / 2).ceil().clamp(2, 4000));
+          }
+          return dashPath(pts, s.size * 2.5, s.size * 1.5);
+        });
     canvas.drawPath(
-      dashPath(pts, s.size * 2.5, s.size * 1.5),
+      path,
       Paint()
         ..color = colorFromHex(s.color)
         ..style = PaintingStyle.stroke
@@ -1083,13 +1124,21 @@ void paintStroke(ui.Canvas canvas, Stroke s,
     streamline: s.streamline ?? base.streamline,
     size: s.size,
   );
-  final outline = strokeOutline(positions, pressures, params: eff);
-  if (outline.length < 3) return;
-  final path = Path()..moveTo(outline.first.dx, outline.first.dy);
-  for (var i = 1; i < outline.length; i++) {
-    path.lineTo(outline[i].dx, outline[i].dy);
-  }
-  path.close();
+  final path = _cachedStrokePath(
+      s,
+      'brush|${s.size}|${s.points.length}|${eff.thinning}|'
+      '${eff.streamline}',
+      () {
+        final outline = strokeOutline(positions, pressures, params: eff);
+        if (outline.length < 3) return Path();
+        final p = Path()..moveTo(outline.first.dx, outline.first.dy);
+        for (var i = 1; i < outline.length; i++) {
+          p.lineTo(outline[i].dx, outline[i].dy);
+        }
+        p.close();
+        return p;
+      });
+  if (path.getBounds().isEmpty) return;
   canvas.drawPath(
     path,
     Paint()

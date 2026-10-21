@@ -353,6 +353,84 @@ void main() {
     await tester.pump();
   }
 
+  testWidgets('圈選等比縮放：筆跡＋圖片一起放大，一次 undo 回來', (tester) async {
+    final store = MemoryNoteStore();
+    final settings = AppSettings();
+    final note = _seedNote('a1b2', 't', '');
+    note.images.add(const NoteImage(
+        id: 'im1', page: 0, x: 120, y: 285, w: 60, h: 20));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await pumpEditor(tester, store, settings, loaded);
+    await lassoSelect(tester, const [
+      Offset(80, 270),
+      Offset(220, 270),
+      Offset(220, 330),
+      Offset(80, 330),
+      Offset(80, 270),
+    ]);
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+
+    final sx0 = loaded.strokes.first.points.map((p) => p.x).reduce(
+            (a, b) => a > b ? a : b) -
+        loaded.strokes.first.points.map((p) => p.x).reduce(
+            (a, b) => a < b ? a : b);
+    final iw0 = loaded.images.first.w;
+    // 選取框右下角（筆跡 x100..190、圖片 y285..305 的聯集）
+    await tester.dragFrom(const Offset(190, 305), const Offset(35, 20));
+    await tester.pump();
+    final sx1 = loaded.strokes.first.points.map((p) => p.x).reduce(
+            (a, b) => a > b ? a : b) -
+        loaded.strokes.first.points.map((p) => p.x).reduce(
+            (a, b) => a < b ? a : b);
+    expect(sx1, greaterThan(sx0));
+    expect(loaded.images.first.w, greaterThan(iw0));
+
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    final sx2 = loaded.strokes.first.points.map((p) => p.x).reduce(
+            (a, b) => a > b ? a : b) -
+        loaded.strokes.first.points.map((p) => p.x).reduce(
+            (a, b) => a < b ? a : b);
+    expect(sx2, closeTo(sx0, 1.0));
+    expect(loaded.images.first.w, closeTo(iw0, 1.0));
+  });
+
+  testWidgets('圈選只有圖片也能縮放，不用先點圖', (tester) async {
+    final store = MemoryNoteStore();
+    final settings = AppSettings();
+    final note = _seedNote('a1b2', 't', '');
+    note.strokes.clear();
+    note.images.add(const NoteImage(
+        id: 'im1', page: 0, x: 120, y: 285, w: 60, h: 20));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await pumpEditor(tester, store, settings, loaded);
+    await lassoSelect(tester, const [
+      Offset(80, 270),
+      Offset(220, 270),
+      Offset(220, 330),
+      Offset(80, 330),
+      Offset(80, 270),
+    ]);
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+
+    final w0 = loaded.images.first.w;
+    final h0 = loaded.images.first.h;
+    // 只有圖片時，選取框右下角就是圖片右下角 (180,305)
+    await tester.dragFrom(const Offset(180, 305), const Offset(30, 15));
+    await tester.pump();
+    expect(loaded.images.first.x, closeTo(120, 0.5));
+    expect(loaded.images.first.y, closeTo(285, 0.5));
+    expect(loaded.images.first.w, greaterThan(w0));
+    expect(loaded.images.first.h, greaterThan(h0));
+
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    expect(loaded.images.first.w, closeTo(w0, 1.0));
+    expect(loaded.images.first.h, closeTo(h0, 1.0));
+  });
+
   testWidgets('圈選複製：副本偏移並選中新件', (tester) async {
     final store = MemoryNoteStore();
     final settings = AppSettings();

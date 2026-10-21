@@ -5,6 +5,7 @@ import 'package:ink_notes/settings/app_settings.dart';
 import 'package:ink_notes/storage/memory_note_store.dart';
 import 'package:ink_notes/ui/editor_page.dart';
 import 'package:ink_notes/ui/eraser_icons.dart';
+import 'package:ink_notes/ui/ink_canvas.dart';
 
 Note _a4note() => Note(
       id: 'a1b2',
@@ -213,6 +214,52 @@ void main() {
     expect(loaded.strokes.first.points.length, 2);
   });
 
+  for (final type in ['dashed', 'highlighter']) {
+    testWidgets('$type 形狀修正：停頓拉直且保留筆型', (tester) async {
+      final store = MemoryNoteStore();
+      final note = _a4note();
+      await store.save(note);
+      final loaded = await store.load('a1b2');
+      loaded.strokes.clear();
+      final settings = AppSettings()..lastPenType = type;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: EditorPage(repo: store, settings: settings, note: loaded),
+        ),
+      ));
+      await tester.pumpAndSettle();
+
+      const pid = 1;
+      tester.binding.handlePointerEvent(PointerDownEvent(
+        pointer: pid,
+        position: const Offset(300, 300),
+        timeStamp: Duration.zero,
+      ));
+      await tester.pump();
+      for (var i = 1; i <= 10; i++) {
+        tester.binding.handlePointerEvent(PointerMoveEvent(
+          pointer: pid,
+          position: Offset(300 + i * 20, 300 + (i % 2) * 2.0),
+          timeStamp: Duration(milliseconds: i * 50),
+        ));
+        await tester.pump();
+      }
+      tester.binding.handlePointerEvent(PointerUpEvent(
+        pointer: pid,
+        position: const Offset(500, 300),
+        timeStamp: const Duration(milliseconds: 500 + 1200),
+      ));
+      await tester.pump();
+
+      expect(loaded.strokes.length, 1);
+      expect(loaded.strokes.first.type, type);
+      expect(loaded.strokes.first.points.length, 2);
+      await tester.tap(find.byIcon(Icons.undo));
+      await tester.pump();
+      expect(loaded.strokes.first.points.length, 51);
+    });
+  }
+
   testWidgets('視圖模式：全屏回調 + 沉浸經三點菜單', (tester) async {
     final store = MemoryNoteStore();
     final note = _a4note();
@@ -357,5 +404,56 @@ void main() {
     expect(bar.dy, lessThan(250));
     expect(bar.dx, greaterThanOrEqualTo(8));
     expect(bar.dx, lessThan(700));
+  });
+
+  testWidgets('第 2 頁圈選拖曳：頁內座標正確，抬起才提交', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 1/2 頁'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 2 頁'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(LassoIcon));
+    await tester.pump();
+    final g = await tester.startGesture(const Offset(70, 150));
+    for (final p in const [
+      Offset(230, 150),
+      Offset(230, 220),
+      Offset(70, 220),
+      Offset(70, 150),
+    ]) {
+      await g.moveTo(p);
+    }
+    await g.up();
+    await tester.pump();
+    expect(find.byIcon(Icons.copy), findsOneWidget);
+
+    final canvas = tester.widget<InkCanvas>(find.byType(InkCanvas));
+    final bounds = canvas.selectionBounds!.shift(Offset(
+        0, canvas.pageRects[canvas.selectionPage].top - 24));
+    final start =
+        tester.getTopLeft(find.byType(InkCanvas)) +
+            canvas.panOffset +
+            (bounds.topLeft + const Offset(2, 2)) * canvas.scale;
+    final before = loaded.strokes.last.points.first.x;
+    final drag = await tester.startGesture(start);
+    await drag.moveBy(Offset(40 * canvas.scale, 0));
+    await tester.pump();
+    expect(loaded.strokes.last.points.first.x, closeTo(before, 0.01));
+    await drag.up();
+    await tester.pump();
+    expect(loaded.strokes.last.points.first.x, closeTo(before + 40, 1.0));
   });
 }

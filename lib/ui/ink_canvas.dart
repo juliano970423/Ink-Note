@@ -62,6 +62,9 @@ class InkCanvas extends StatefulWidget {
   final void Function(Offset delta) onSelectionMove;
   /// 圈選旋轉：手柄拖動的角度增量（繞堆疊座標 [center]），與移動同一個 undo 作用域。
   final void Function(double dAngle, Offset center) onSelectionRotate;
+  /// 圈選縮放：手柄拖動的等比增量（[anchor] 為堆疊座標左上角），
+  /// 與移動/旋轉同一個 undo 作用域。未提供時只畫手柄、不縮放。
+  final void Function(double factor, Offset anchor)? onSelectionScale;
   final VoidCallback onDeselect;
   final Rect? selectionBounds;
   /// 選區所在頁（[selectionBounds] 為該頁頁內座標）。
@@ -72,6 +75,8 @@ class InkCanvas extends StatefulWidget {
   final List<Rect> pageRects;
   /// 隱藏的圖層 id（不畫、不命中）。
   final List<int> hiddenLayers;
+  /// 使用中圖層：橡皮與圖片點選只作用這一層。
+  final int activeLayer;
   /// 貼圖：meta 列表（構造參數，editor setState 更新）＋解碼圖
   /// （setNoteImages imperative＋clone 自持，仿底圖）。
   /// 按圖層烘進快取（同層筆跡蓋圖，上層一切蓋下層一切）。
@@ -84,6 +89,8 @@ class InkCanvas extends StatefulWidget {
   final void Function(String id, double x, double y, double w, double h)
       onImageChanged;
   final VoidCallback onImageDragEnd;
+  /// 圈選中的筆跡（editor 持有；拖曳預覽要用同一批物件排除／另畫）。
+  final Set<Stroke> selectedStrokes;
   /// 圈選中的圖片 ids（editor 持有，只畫框；拖動只認內部單選）。
   final Set<String> selectedImageIds;
   /// 像素橡皮半徑 / 按筆畫橡皮命中閾值 / 螢光筆寬度倍數與透明度。
@@ -112,6 +119,7 @@ class InkCanvas extends StatefulWidget {
     required this.onImageDragStart,
     required this.onImageChanged,
     required this.onImageDragEnd,
+    this.selectedStrokes = const {},
     this.selectedImageIds = const {},
     required this.panOffset,
     required this.scale,
@@ -126,12 +134,14 @@ class InkCanvas extends StatefulWidget {
     required this.onLassoCompleted,
     required this.onSelectionMove,
     required this.onSelectionRotate,
+    this.onSelectionScale,
     required this.onDeselect,
     this.selectionBounds,
     this.selectionPage = 0,
     this.selectionRect,
     this.pageRects = const [],
     this.hiddenLayers = const [],
+    this.activeLayer = 0,
     this.pixelRadius = 12.0,
     this.strokeThreshold = 12.0,
     this.hlWidth = 3.0,
@@ -146,7 +156,13 @@ class InkCanvasState extends State<InkCanvas> {
   LiveStroke? _live;
   ink.VelocityTracker _tracker = ink.VelocityTracker();
   List<Offset> _liveOutline = [];
-  ui.Picture? _completedPicture;
+  final Map<int, _PagePics> _pagePics = {};
+  final Set<int> _dirtyPages = {};
+  bool _allPagesDirty = true;
+  bool _bgDirty = true;
+  bool _buildRunning = false;
+  bool _buildScheduled = false;
+  bool _buildAgain = false;
   // 底圖層（筆跡層之下；分層渲染，互不擋）
   ui.Picture? _bgPicture;
   Duration _lastOutlineAt = Duration.zero;
@@ -212,7 +228,22 @@ class InkCanvasState extends State<InkCanvas> {
   bool _rotating = false;
   Offset? _rotateCenter;
   double _rotateLastAng = 0;
+  bool _scaling = false;
+  Offset? _scaleAnchor;
+  Offset? _scaleLastLocal;
   Offset? _lastLocal;
+  bool _rotatePreview = false;
+  // 選取拖曳預覽：受影響頁重烘一份不含選取物的底圖，選取物另存分層圖；
+  // 拖曳中只套 transform 重畫，不碰 note、不重建頁面。
+  _SelectionPreview? _selectionPreview;
+  bool _previewBuilding = false;
+  bool _previewClearAfterBuild = false;
+  bool _previewImageOnly = false;
+  int _previewGen = 0;
+  Offset _previewDelta = Offset.zero;
+  double _previewFactor = 1.0;
+  double _previewAngle = 0;
+  Offset? _previewRotateCenter;
   // PDF 底圖（編輯器推送解碼好的圖，畫布 clone 自持，畫進快取最底層）
   Map<int, ui.Image> _bgImgs = {};
   // 貼圖解碼圖（id → 圖；clone 自持＋隔代釋放，仿底圖）
@@ -225,6 +256,7 @@ class InkCanvasState extends State<InkCanvas> {
   bool _imgResizing = false;
   Offset? _imgDragLast;
   bool _imgDragStarted = false;
+  NoteImage? _imgDragStart;
   // 取消點待定：有圖選中時筆點圖外，先取消選中；抬起時沒畫出東西
   // 就不提交（只取消，不多一筆點筆）；真畫了就正常落筆。
   int? _deselectTapArmed;
@@ -247,7 +279,7 @@ class InkCanvasState extends State<InkCanvas> {
   void initState() {
     super.initState();
     _tracker = ink.VelocityTracker(emaWeight: widget.params.emaWeight);
-    _scheduleCompletedRebuild();
+    _runBuild();
   }
 
   @override
@@ -257,20 +289,47 @@ class InkCanvasState extends State<InkCanvas> {
     if (widget.params.emaWeight != _tracker.emaWeight) {
       _tracker.emaWeight = widget.params.emaWeight;
     }
-    // 參數/筆畫/頁數/螢光寬度變化 → 清快取重建（平移縮放只改 transform，不重建）
-    if (widget.strokes.length != oldWidget.strokes.length ||
-        widget.pageRects.length != oldWidget.pageRects.length ||
+    // 上層切層/清選取後，畫布內的單圖選取與拖動狀態要同步失效。
+    if (_selectedImageId != null &&
+        !widget.selectedImageIds.contains(_selectedImageId)) {
+      _selectedImageId = null;
+      _imgDragPointer = null;
+      _imgResizing = false;
+      _imgDragLast = null;
+      _imgDragStarted = false;
+      _imgDragStart = null;
+      _deselectTapArmed = null;
+    }
+    // 參數/頁數/隱藏層變化 → 全量重建；筆畫/圖片變化若上層已標 dirty
+    // 就只重建該頁，沒標才全量保險（平移縮放只改 transform，不重建）。
+    final full = widget.pageRects.length != oldWidget.pageRects.length ||
         widget.hlWidth != oldWidget.hlWidth ||
         widget.params.thinning != oldWidget.params.thinning ||
         widget.params.streamline != oldWidget.params.streamline ||
         widget.params.size != oldWidget.params.size ||
-        !identical(widget.strokes, oldWidget.strokes)) {
-      _scheduleCompletedRebuild();
+        widget.hiddenLayers.length != oldWidget.hiddenLayers.length ||
+        !identical(widget.hiddenLayers, oldWidget.hiddenLayers);
+    final changed = !identical(widget.strokes, oldWidget.strokes) ||
+        !identical(widget.images, oldWidget.images);
+    if (full) {
+      invalidateCache();
+    } else if (changed && _dirtyPages.isEmpty && !_allPagesDirty) {
+      invalidateCache();
     }
   }
 
-  /// 外部筆畫/參數/頁碼變化後調用：後台重建、好了才換（無閃白）。
+  /// 外部筆畫/參數/頁碼變化後調用：全部頁面重建、好了才換（無閃白）。
   void invalidateCache() {
+    _allPagesDirty = true;
+    _bgDirty = true;
+    _dirtyPages.clear();
+    _scheduleCompletedRebuild();
+  }
+
+  /// 只重建指定頁（落筆、拖移、橡皮、圖片變更走這條）。
+  void invalidatePage(int page) {
+    if (!_validPage(page)) return;
+    _dirtyPages.add(page);
     _scheduleCompletedRebuild();
   }
 
@@ -285,6 +344,7 @@ class InkCanvasState extends State<InkCanvas> {
     }
     _retiredBgImgs = _bgImgs;
     _bgImgs = {for (final e in images.entries) e.key: e.value.clone()};
+    _bgDirty = true;
     _scheduleCompletedRebuild();
   }
 
@@ -333,7 +393,10 @@ class InkCanvasState extends State<InkCanvas> {
               m.page >= widget.pageRects.length)) {
         continue;
       }
-      if (widget.hiddenLayers.contains(m.layer)) continue;
+      if (m.layer != widget.activeLayer ||
+          widget.hiddenLayers.contains(m.layer)) {
+        continue;
+      }
       if (m.contains(_localOf(stacked, m.page))) return m.id;
     }
     return null;
@@ -359,6 +422,7 @@ class InkCanvasState extends State<InkCanvas> {
     _imgResizing = false;
     _imgDragLast = null;
     _imgDragStarted = false;
+    _imgDragStart = null;
     widget.onImageSelected(id);
     if (mounted) setState(() {});
   }
@@ -375,6 +439,7 @@ class InkCanvasState extends State<InkCanvas> {
     _imgResizing = false;
     _imgDragLast = null;
     _imgDragStarted = false;
+    _imgDragStart = null;
     if (mounted) setState(() {});
   }
 
@@ -400,7 +465,7 @@ class InkCanvasState extends State<InkCanvas> {
       if (!mounted ||
           live == null ||
           !widget.shapeSnap ||
-          live.penType != PenType.brush ||
+          !canSnapShape(live.penType) ||
           live.positions.length < 8) {
         return;
       }
@@ -415,63 +480,149 @@ class InkCanvasState extends State<InkCanvas> {
     });
   }
 
-  int _picGen = 0;
+  bool get _stackedPages => widget.pageRects.isNotEmpty;
 
-  void _scheduleCompletedRebuild() async {
-    // 雙緩衝 + 分層：底圖一張、筆跡一張，好了才一起換（無閃白）；
-    // 筆跡層疊在底圖層上（螢光筆「字下面」需求已收回，標準半透明蓋字）。
-    final gen = ++_picGen;
-    ui.Picture? bgPic;
-    ui.Picture pic;
-    if (widget.pageRects.isEmpty) {
-      final strokes = widget.strokes
-          .where((s) => !widget.hiddenLayers.contains(s.layer))
-          .toList();
-      pic = await paintStrokesToPicture(strokes,
-          hlWidth: widget.hlWidth,
-          params: widget.params,
-          images: widget.images,
-          noteImages: _noteImgs,
-          hiddenLayers: widget.hiddenLayers);
-    } else {
-      final groups = <PageLayer, List<Stroke>>{};
-      for (final s in widget.strokes) {
-        if (widget.hiddenLayers.contains(s.layer)) continue;
-        (groups[(page: s.page, layer: s.layer)] ??= []).add(s);
-      }
-      Offset origin(int page) {
-        if (page < 0 || page >= widget.pageRects.length) return Offset.zero;
-        return Offset(0, widget.pageRects[page].top - 24);
-      }
-      Rect? bgRectOf(int p) => (p >= 0 && p < widget.pageRects.length)
-          ? widget.pageRects[p]
-          : null;
+  int get _renderPageCount => _stackedPages ? widget.pageRects.length : 1;
 
-      bgPic = await paintBgToPicture(
-          backgrounds: _bgImgs, bgRectOf: bgRectOf);
-      if (!mounted || gen != _picGen) {
-        bgPic.dispose();
-        return;
+  bool _validPage(int page) => page >= 0 && page < _renderPageCount;
+
+  void _scheduleCompletedRebuild() {
+    if (_buildScheduled) return;
+    _buildScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _buildScheduled = false;
+      if (!mounted) return;
+      if (!_allPagesDirty && _dirtyPages.isEmpty && !_bgDirty) return;
+      _runBuild();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  Future<_PagePics> _buildPagePics(
+    int page, {
+    bool Function(Stroke)? includeStroke,
+    bool Function(NoteImage)? includeImage,
+  }) async {
+    final hlByLayer = <int, List<Stroke>>{};
+    final byLayer = <int, List<Stroke>>{};
+    final imagesByLayer = <int, List<NoteImage>>{};
+    final layers = <int>{};
+    for (final s in widget.strokes) {
+      if (s.page != page || widget.hiddenLayers.contains(s.layer)) continue;
+      if (includeStroke != null && !includeStroke(s)) continue;
+      if (PenTypeLabel.parse(s.type) == PenType.highlighter) {
+        (hlByLayer[s.layer] ??= []).add(s);
+      } else {
+        (byLayer[s.layer] ??= []).add(s);
       }
-      pic = await paintPagesToPicture(groups, origin,
-          hlWidth: widget.hlWidth,
-          params: widget.params,
-          images: widget.images,
-          noteImages: _noteImgs,
-          hiddenLayers: widget.hiddenLayers,
-          includeBackgrounds: false);
+      layers.add(s.layer);
     }
-    if (!mounted || gen != _picGen) {
-      bgPic?.dispose();
-      pic.dispose();
+    for (final m in widget.images) {
+      if (m.page != page || widget.hiddenLayers.contains(m.layer)) continue;
+      if (includeImage != null && !includeImage(m)) continue;
+      if (!_noteImgs.containsKey(m.id)) continue;
+      (imagesByLayer[m.layer] ??= []).add(m);
+      layers.add(m.layer);
+    }
+    final out = _PagePics();
+    if (hlByLayer.isNotEmpty) {
+      final hl = <Stroke>[];
+      for (final layer in hlByLayer.keys.toList()..sort()) {
+        hl.addAll(hlByLayer[layer]!);
+      }
+      out.highlighters = await paintStrokesToPicture(hl,
+          hlWidth: widget.hlWidth, params: widget.params);
+    }
+    for (final layer in layers.toList()..sort()) {
+      final strokes = byLayer[layer] ?? const <Stroke>[];
+      final images = imagesByLayer[layer] ?? const <NoteImage>[];
+      if (strokes.isEmpty && images.isEmpty) continue;
+      out.layers[layer] = await paintStrokesToPicture(strokes,
+          hlWidth: widget.hlWidth,
+          params: widget.params,
+          images: images,
+          noteImages: _noteImgs);
+    }
+    return out;
+  }
+
+  Future<void> _runBuild() async {
+    if (_buildRunning) {
+      _buildAgain = true;
       return;
     }
-    setState(() {
-      _bgPicture?.dispose();
-      _bgPicture = bgPic;
-      _completedPicture?.dispose();
-      _completedPicture = pic;
-    });
+    _buildRunning = true;
+    final all = _allPagesDirty;
+    final bgDirty = _bgDirty;
+    final pages = all
+        ? List<int>.generate(_renderPageCount, (i) => i)
+        : (_dirtyPages.where(_validPage).toList()..sort());
+    _allPagesDirty = false;
+    _bgDirty = false;
+    _dirtyPages.clear();
+    ui.Picture? bgPic;
+    final built = <int, _PagePics>{};
+    try {
+      if (bgDirty && _stackedPages && _bgImgs.isNotEmpty) {
+        bgPic = await paintBgToPicture(
+          backgrounds: _bgImgs,
+          bgRectOf: (p) =>
+              (p >= 0 && p < widget.pageRects.length) ? widget.pageRects[p] : null,
+        );
+      }
+      for (final page in pages) {
+        final pics = await _buildPagePics(page);
+        if (!mounted) {
+          bgPic?.dispose();
+          for (final p in built.values) {
+            p.dispose();
+          }
+          pics.dispose();
+          return;
+        }
+        built[page] = pics;
+      }
+      if (!mounted) {
+        bgPic?.dispose();
+        for (final p in built.values) {
+          p.dispose();
+        }
+        return;
+      }
+      setState(() {
+        if (bgDirty) {
+          _bgPicture?.dispose();
+          _bgPicture = bgPic;
+        }
+        if (all) {
+          for (final page in _pagePics.keys.toList()) {
+            if (!built.containsKey(page)) _pagePics.remove(page)?.dispose();
+          }
+        }
+        built.forEach((page, pics) {
+          _pagePics.remove(page)?.dispose();
+          _pagePics[page] = pics;
+        });
+      });
+      final preview = _selectionPreview;
+      if (_previewClearAfterBuild &&
+          preview != null &&
+          built.containsKey(preview.page) &&
+          !_dirtyPages.contains(preview.page) &&
+          !_allPagesDirty) {
+        _clearSelectionPreview();
+      } else if (_previewClearAfterBuild && preview == null) {
+        _previewClearAfterBuild = false;
+      }
+    } finally {
+      _buildRunning = false;
+      final again = _buildAgain ||
+          _dirtyPages.isNotEmpty ||
+          _allPagesDirty ||
+          _bgDirty;
+      _buildAgain = false;
+      if (mounted && again) _scheduleCompletedRebuild();
+    }
   }
 
   bool _acceptKind(PointerDeviceKind kind) {
@@ -539,6 +690,103 @@ class InkCanvasState extends State<InkCanvas> {
     return b.center + Offset(math.cos(ang), math.sin(ang)) * _handleDist;
   }
 
+  /// 圈選縮放手柄（堆疊座標）：選區右下角。
+  Offset? _scaleHandle() => _stackedBounds()?.bottomRight;
+
+  /// 依指標位移累積等比縮放；實際只更新預覽，抬起才寫回 note。
+  void _applySelectionScale(Offset local) {
+    final anchor = _scaleAnchor;
+    final last = _scaleLastLocal;
+    if (anchor == null || last == null) return;
+    final d = (local - last) / widget.scale;
+    _scaleLastLocal = local;
+    if (d.dx == 0 && d.dy == 0) return;
+    final b = _stackedBounds();
+    if (b == null) return;
+    // 右下角拖動：橫向＋縱向增量分攤到選區邊長；極小選區用 24 墊底避免暴衝。
+    final denom = math.max(b.width + b.height, 24.0);
+    final f = (1 + (d.dx + d.dy) / denom).clamp(0.2, 5.0);
+    if ((f - 1).abs() <= 0.001) return;
+    _previewFactor = (_previewFactor * f).clamp(0.05, 8.0);
+    if (_selectionPreview == null && !_previewBuilding) {
+      unawaited(_beginSelectionPreview());
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _beginSelectionPreview() async {
+    if (_selectionPreview != null || _previewBuilding) return;
+    final img = _selectedMeta();
+    final imageOnly = _imgDragPointer != null && img != null;
+    final page = imageOnly ? img.page : widget.selectionPage;
+    if (!_validPage(page)) return;
+    if (imageOnly
+        ? false
+        : widget.selectedStrokes.isEmpty && widget.selectedImageIds.isEmpty) {
+      return;
+    }
+    final imageIds = imageOnly ? {img.id} : widget.selectedImageIds;
+    final gen = ++_previewGen;
+    _previewBuilding = true;
+    _previewImageOnly = imageOnly;
+    final base = await _buildPagePics(
+      page,
+      includeStroke: imageOnly
+          ? (s) => true
+          : (s) => !widget.selectedStrokes.contains(s),
+      includeImage: (m) => !imageIds.contains(m.id),
+    );
+    final selected = await _buildPagePics(
+      page,
+      includeStroke: imageOnly
+          ? (s) => false
+          : widget.selectedStrokes.contains,
+      includeImage: (m) => imageIds.contains(m.id),
+    );
+    _previewBuilding = false;
+    if (!mounted ||
+        gen != _previewGen ||
+        !(_movingSel || _scaling || _rotating || _imgDragPointer != null)) {
+      if (gen == _previewGen) _previewImageOnly = false;
+      base.dispose();
+      selected.dispose();
+      return;
+    }
+    setState(() {
+      _selectionPreview?.dispose();
+      _selectionPreview = _SelectionPreview(
+        page: page,
+        base: base,
+        selected: selected,
+      );
+    });
+  }
+
+  void _clearSelectionPreview() {
+    ++_previewGen;
+    _previewBuilding = false;
+    _previewClearAfterBuild = false;
+    _previewImageOnly = false;
+    final preview = _selectionPreview;
+    _selectionPreview = null;
+    _previewDelta = Offset.zero;
+    _previewFactor = 1.0;
+    _previewAngle = 0;
+    _previewRotateCenter = null;
+    _scaleAnchor = null;
+    preview?.dispose();
+    if (mounted) setState(() {});
+  }
+
+  /// 提交後先保留預覽，等新頁快取烘好再收，避免放開瞬間回跳舊位置。
+  void _holdPreviewForNextPageBuild() {
+    if (_selectionPreview == null && !_previewBuilding) {
+      _clearSelectionPreview();
+      return;
+    }
+    _previewClearAfterBuild = true;
+  }
+
   double _angleOf(Offset p, Offset c) =>
       math.atan2(p.dy - c.dy, p.dx - c.dx);
 
@@ -590,12 +838,20 @@ class InkCanvasState extends State<InkCanvas> {
       _lassoPath = [];
       _movingSel = false;
       _rotating = false;
+      _rotatePreview = false;
+      _scaling = false;
+      _scaleAnchor = null;
+      _scaleLastLocal = null;
+      if (_selectionPreview != null || _previewBuilding) {
+        _clearSelectionPreview();
+      }
       _singlePanLast = null;
       _singlePanDown = null;
       // 雙指打斷圖片拖（選中保留，只停跟手；殘留會話順手結算）
       _imgDragPointer = null;
       _imgResizing = false;
       _imgDragLast = null;
+      _imgDragStart = null;
       if (_imgDragStarted) {
         _imgDragStarted = false;
         widget.onImageDragEnd();
@@ -604,6 +860,7 @@ class InkCanvasState extends State<InkCanvas> {
       return;
     }
     if (_blockUntilLift) return;
+    if (_previewClearAfterBuild) _clearSelectionPreview();
     // 圈選工具：筆/滑鼠照常圈；防誤觸開時手指不圈（改單指平移，
     // 否則手掌誤放滿屏亂圈，與筆工具規則一致）。
     // 例外（touchMoveSelection 開）：手指落在已選物件上 → 拖動物件；
@@ -627,6 +884,27 @@ class InkCanvasState extends State<InkCanvas> {
         _rotating = true;
         _rotateCenter = _stackedBounds()!.center;
         _rotateLastAng = _angleOf(pos, _rotateCenter!);
+        _rotatePreview = widget.selectedImageIds.isEmpty &&
+            _selectedImageId == null;
+        _previewAngle = 0;
+        _previewRotateCenter = _rotateCenter;
+        _previewDelta = Offset.zero;
+        _previewFactor = 1.0;
+        _scaleAnchor = null;
+        _primary = e.pointer;
+        return;
+      }
+      // 圈選右下角手柄→整組等比縮放（筆跡＋圖片一起）
+      final scaleHandle = _scaleHandle();
+      final stackedBounds = _stackedBounds();
+      if (scaleHandle != null &&
+          stackedBounds != null &&
+          (pos - scaleHandle).distance <= 22 / widget.scale) {
+        _scaling = true;
+        _scaleAnchor = stackedBounds.topLeft;
+        _scaleLastLocal = e.localPosition;
+        _previewFactor = 1.0;
+        _previewDelta = Offset.zero;
         _primary = e.pointer;
         return;
       }
@@ -639,6 +917,7 @@ class InkCanvasState extends State<InkCanvas> {
           _imgResizing = true;
           _imgDragLast = e.localPosition;
           _imgDragStarted = false;
+          _imgDragStart = _selectedMeta();
           _primary = e.pointer;
           return;
         }
@@ -649,6 +928,8 @@ class InkCanvasState extends State<InkCanvas> {
           bounds.inflate(12 / widget.scale).contains(pos)) {
         _movingSel = true;
         _lastLocal = e.localPosition;
+        _previewDelta = Offset.zero;
+        _previewFactor = 1.0;
       } else {
         // 點中未選中的圖→選中＋跟手拖；空白→取消選中＋開新圈選路徑。
         // （筆工具永遠畫線不碰圖片；圖片點選/拖動/縮放只在圈選工具下。）
@@ -659,6 +940,7 @@ class InkCanvasState extends State<InkCanvas> {
           _imgResizing = false;
           _imgDragLast = e.localPosition;
           _imgDragStarted = false;
+          _imgDragStart = _selectedMeta();
           _primary = e.pointer;
           return;
         }
@@ -714,6 +996,7 @@ class InkCanvasState extends State<InkCanvas> {
           _imgResizing = true;
           _imgDragLast = e.localPosition;
           _imgDragStarted = false;
+          _imgDragStart = _selectedMeta();
           _primary = e.pointer;
           return;
         }
@@ -727,6 +1010,7 @@ class InkCanvasState extends State<InkCanvas> {
         _imgResizing = false;
         _imgDragLast = e.localPosition;
         _imgDragStarted = false;
+        _imgDragStart = _selectedMeta();
         _primary = e.pointer;
         return;
       }
@@ -840,21 +1124,29 @@ class InkCanvasState extends State<InkCanvas> {
         _imgDragLast != null) {
       final d = (e.localPosition - _imgDragLast!) / widget.scale;
       _imgDragLast = e.localPosition;
-      final meta = _selectedMeta();
-      if (meta != null && (d.dx != 0 || d.dy != 0)) {
+      final start = _imgDragStart ??= _selectedMeta();
+      if (start != null && (d.dx != 0 || d.dy != 0)) {
         // 首動才通知上層 checkpoint（純點選不留空 undo）
         if (!_imgDragStarted) {
           _imgDragStarted = true;
           widget.onImageDragStart();
         }
         if (_imgResizing) {
-          // 右下拖：按對角線增量等比（右/下為正＝放大）
-          final f = (1 + (d.dx + d.dy) / (meta.w + meta.h)).clamp(0.05, 8.0);
-          final r = meta.scaled(f);
-          widget.onImageChanged(meta.id, r.x, r.y, r.w, r.h);
+          // 右下拖：按對角線增量等比（右/下為正＝放大），只更新預覽
+          final denom = math.max(start.w + start.h, 24.0);
+          final f = (1 + (d.dx + d.dy) / denom).clamp(0.05, 8.0);
+          _previewFactor = (_previewFactor * f).clamp(0.05, 8.0);
+          final pr = widget.pageRects;
+          _scaleAnchor = pr.isEmpty ||
+                  start.page < 0 ||
+                  start.page >= pr.length
+              ? Offset(start.x, start.y)
+              : Offset(start.x, start.y + pr[start.page].top - 24);
         } else {
-          widget.onImageChanged(
-              meta.id, meta.x + d.dx, meta.y + d.dy, meta.w, meta.h);
+          _previewDelta += d;
+        }
+        if (_selectionPreview == null && !_previewBuilding) {
+          unawaited(_beginSelectionPreview());
         }
         if (mounted) setState(() {});
       }
@@ -872,6 +1164,11 @@ class InkCanvasState extends State<InkCanvas> {
     final stacked = _content(e.localPosition);
     if (widget.tool == ToolMode.lasso) {
       if (_primary != null && e.pointer != _primary) return;
+      // 縮放中：右下角手柄逐幀等比
+      if (_scaling) {
+        _applySelectionScale(e.localPosition);
+        return;
+      }
       // 旋轉中：算繞中心的角度增量（堆疊座標系，平移不變）
       if (_rotating && _rotateCenter != null) {
         final c = _rotateCenter!;
@@ -885,16 +1182,30 @@ class InkCanvasState extends State<InkCanvas> {
         }
         _rotateLastAng = now;
         if (d.abs() > 0.002) {
-          widget.onSelectionRotate(d, c);
           // 手柄跟著內容一起轉
           _handleAng = (_handleAng ?? math.pi / 2) + d;
+          if (_rotatePreview) {
+            _previewAngle += d;
+            if (_selectionPreview == null && !_previewBuilding) {
+              unawaited(_beginSelectionPreview());
+            }
+            if (mounted) setState(() {});
+          } else {
+            widget.onSelectionRotate(d, c);
+          }
         }
         return;
       }
       if (_movingSel) {
         if (_lastLocal != null) {
-          widget.onSelectionMove(
-              (e.localPosition - _lastLocal!) / widget.scale);
+          final d = (e.localPosition - _lastLocal!) / widget.scale;
+          if (d.dx != 0 || d.dy != 0) {
+            _previewDelta += d;
+            if (_selectionPreview == null && !_previewBuilding) {
+              unawaited(_beginSelectionPreview());
+            }
+            if (mounted) setState(() {});
+          }
         }
         _lastLocal = e.localPosition;
         return;
@@ -1118,10 +1429,38 @@ class InkCanvasState extends State<InkCanvas> {
     // 圖片拖動結束（僅所屬指針）：選中保留；沒動過只清狀態不結算
     if (_imgDragPointer != null && e.pointer == _imgDragPointer) {
       final wasStarted = _imgDragStarted;
+      final wasResizing = _imgResizing;
+      final start = _imgDragStart;
       _imgDragPointer = null;
       _imgResizing = false;
       _imgDragLast = null;
       _imgDragStarted = false;
+      _imgDragStart = null;
+      var committed = false;
+      if (wasStarted && start != null) {
+        if (wasResizing) {
+          final f = _previewFactor;
+          if ((f - 1).abs() > 0.001) {
+            final r = start.scaled(f);
+            widget.onImageChanged(start.id, r.x, r.y, r.w, r.h);
+            committed = true;
+          }
+        } else if (_previewDelta.distance > 0.5) {
+          widget.onImageChanged(
+            start.id,
+            start.x + _previewDelta.dx,
+            start.y + _previewDelta.dy,
+            start.w,
+            start.h,
+          );
+          committed = true;
+        }
+      }
+      if (committed) {
+        _holdPreviewForNextPageBuild();
+      } else {
+        _clearSelectionPreview();
+      }
       if (_primary == e.pointer) _primary = null;
       if (wasStarted) widget.onImageDragEnd();
       return;
@@ -1173,17 +1512,50 @@ class InkCanvasState extends State<InkCanvas> {
       final wasMoving = _movingSel;
       _movingSel = false;
       final wasRotating = _rotating;
+      final rotatePreview = _rotatePreview;
+      final rotateAngle = _previewAngle;
+      final rotateCenter = _rotateCenter;
       _rotating = false;
       _rotateCenter = null;
+      _rotatePreview = false;
+      final wasScaling = _scaling;
+      if (wasScaling) _applySelectionScale(e.localPosition);
+      final scaleAnchor = _scaleAnchor;
+      final scaleFactor = _previewFactor;
+      _scaling = false;
+      _scaleAnchor = null;
+      _scaleLastLocal = null;
       if (wasMoving) {
-        // 收尾补一次：中途丢帧的位移以 up 位置为准对齐
-        if (_lastLocal != null &&
-            (e.localPosition - _lastLocal!).distance > 0.5) {
-          widget.onSelectionMove(
-              (e.localPosition - _lastLocal!) / widget.scale);
+        // 收尾補一次：中途丢幀的位移以 up 位置為準對齊
+        if (_lastLocal != null) {
+          final d = (e.localPosition - _lastLocal!) / widget.scale;
+          if (d.dx != 0 || d.dy != 0) _previewDelta += d;
         }
         _lastLocal = null;
-      } else if (!wasRotating) {
+        final delta = _previewDelta;
+        if (delta.distance > 0.5) {
+          widget.onSelectionMove(delta);
+          _holdPreviewForNextPageBuild();
+        } else {
+          _clearSelectionPreview();
+        }
+      } else if (wasScaling) {
+        if (scaleAnchor != null && (scaleFactor - 1).abs() > 0.001) {
+          widget.onSelectionScale?.call(scaleFactor, scaleAnchor);
+          _holdPreviewForNextPageBuild();
+        } else {
+          _clearSelectionPreview();
+        }
+      } else if (wasRotating) {
+        if (rotatePreview) {
+          if (rotateCenter != null && rotateAngle.abs() > 0.002) {
+            widget.onSelectionRotate(rotateAngle, rotateCenter);
+            _holdPreviewForNextPageBuild();
+          } else {
+            _clearSelectionPreview();
+          }
+        }
+      } else {
         final upPos = _content(e.localPosition);
         if (_lassoPath.isEmpty ||
             (_lassoPath.last - upPos).distance > 1) {
@@ -1274,6 +1646,13 @@ class InkCanvasState extends State<InkCanvas> {
     _singlePanDown = null;
     _rotating = false;
     _rotateCenter = null;
+    _rotatePreview = false;
+    _scaling = false;
+    _scaleAnchor = null;
+    _scaleLastLocal = null;
+    if (_selectionPreview != null || _previewBuilding) {
+      _clearSelectionPreview();
+    }
     final wasErasing = _erasing;
     final wasPixel = widget.tool == ToolMode.pixelEraser;
     _erasing = false;
@@ -1293,6 +1672,7 @@ class InkCanvasState extends State<InkCanvas> {
       _imgResizing = false;
       _imgDragLast = null;
       _imgDragStarted = false;
+      _imgDragStart = null;
       if (wasStarted) widget.onImageDragEnd();
     }
     if (_active.isEmpty) _blockUntilLift = false;
@@ -1326,7 +1706,10 @@ class InkCanvasState extends State<InkCanvas> {
     _dwellTimer?.cancel();
     _twoTapTimer?.cancel();
     _zoomEndTimer?.cancel();
-    _completedPicture?.dispose();
+    _selectionPreview?.dispose();
+    for (final pics in _pagePics.values) {
+      pics.dispose();
+    }
     _bgPicture?.dispose();
     for (final v in _bgImgs.values) {
       v.dispose();
@@ -1357,7 +1740,14 @@ class InkCanvasState extends State<InkCanvas> {
         child: CustomPaint(
           painter: _InkPainter(
             bg: _bgPicture,
-            completed: _completedPicture,
+            pages: _pagePics,
+            selectionPreview: _selectionPreview,
+            previewDelta: _previewDelta,
+            previewFactor: _previewFactor,
+            previewAnchor: _scaleAnchor,
+            previewAngle: _previewAngle,
+            previewRotateCenter: _previewRotateCenter,
+            imagePreview: _imgDragPointer != null || _previewImageOnly,
             liveOutline: _liveOutline,
             livePositions: _live?.positions,
             livePage: _live?.page ?? 0,
@@ -1380,6 +1770,7 @@ class InkCanvasState extends State<InkCanvas> {
             selectionRect: widget.selectionRect,
             rotateHandle: _rotateHandle(),
             rotateCenter: _stackedBounds()?.center,
+            scaleHandle: _scaleHandle(),
             images: widget.images,
             selectedImageId: _selectedImageId,
             selectedImageIds: widget.selectedImageIds,
@@ -1391,10 +1782,57 @@ class InkCanvasState extends State<InkCanvas> {
   }
 }
 
+class _PagePics {
+  ui.Picture? highlighters;
+  final Map<int, ui.Picture> layers = {};
+
+  void draw(ui.Canvas canvas) {
+    final hl = highlighters;
+    if (hl != null) canvas.drawPicture(hl);
+    for (final layer in layers.keys.toList()..sort()) {
+      canvas.drawPicture(layers[layer]!);
+    }
+  }
+
+  void dispose() {
+    highlighters?.dispose();
+    highlighters = null;
+    for (final pic in layers.values) {
+      pic.dispose();
+    }
+    layers.clear();
+  }
+}
+
+class _SelectionPreview {
+  final int page;
+  final _PagePics base;
+  final _PagePics selected;
+
+  const _SelectionPreview({
+    required this.page,
+    required this.base,
+    required this.selected,
+  });
+
+  void dispose() {
+    base.dispose();
+    selected.dispose();
+  }
+}
+
 class _InkPainter extends CustomPainter {
-  // 底圖層（先畫）與筆跡層（後畫）：分開烘焙、分開畫
+  // 底圖層（先畫）與每頁分層快取（後畫）：分開烘焙、分開畫
   final ui.Picture? bg;
-  final ui.Picture? completed;
+  final Map<int, _PagePics> pages;
+  final _SelectionPreview? selectionPreview;
+  final Offset previewDelta;
+  final double previewFactor;
+  final Offset? previewAnchor;
+  final double previewAngle;
+  final Offset? previewRotateCenter;
+  /// 圖片單獨拖曳/縮放預覽（選取框與手柄也要跟著變形）。
+  final bool imagePreview;
   final List<Offset> liveOutline;
   final List<Offset>? livePositions;
   /// 進行中筆畫所在頁（頁內座標 → 堆疊需平移）。
@@ -1416,6 +1854,8 @@ class _InkPainter extends CustomPainter {
   /// 旋轉手柄（堆疊座標，轉動中會繞中心公轉）及其中心。
   final Offset? rotateHandle;
   final Offset? rotateCenter;
+  /// 圈選縮放手柄（選區右下角；筆跡＋圖片統一）。
+  final Offset? scaleHandle;
   /// 貼圖 meta（選中框定位用；圖本身已烘進 completed）。
   final List<NoteImage> images;
   /// 已選中圖片 id（單選拖動用，虛線框＋右下縮放手柄）與圈選集合（只畫框）。
@@ -1424,7 +1864,14 @@ class _InkPainter extends CustomPainter {
 
   _InkPainter({
     this.bg,
-    required this.completed,
+    required this.pages,
+    required this.selectionPreview,
+    required this.previewDelta,
+    required this.previewFactor,
+    required this.previewAnchor,
+    required this.previewAngle,
+    required this.previewRotateCenter,
+    required this.imagePreview,
     required this.liveOutline,
     required this.livePositions,
     required this.livePage,
@@ -1444,6 +1891,7 @@ class _InkPainter extends CustomPainter {
     required this.selectionRect,
     required this.rotateHandle,
     required this.rotateCenter,
+    required this.scaleHandle,
     required this.images,
     required this.selectedImageId,
     required this.selectedImageIds,
@@ -1453,6 +1901,62 @@ class _InkPainter extends CustomPainter {
   Offset _shift(Offset p, int page) {
     if (pageRects.isEmpty || page < 0 || page >= pageRects.length) return p;
     return p + Offset(0, pageRects[page].top - 24);
+  }
+
+  void _applyPreviewTransform(Canvas canvas, {Offset origin = Offset.zero}) {
+    canvas.translate(previewDelta.dx, previewDelta.dy);
+    final rotateCenter = previewRotateCenter;
+    if (rotateCenter != null && previewAngle.abs() > 1e-6) {
+      canvas.translate(rotateCenter.dx, rotateCenter.dy);
+      canvas.rotate(previewAngle);
+      canvas.translate(-rotateCenter.dx, -rotateCenter.dy);
+    }
+    final anchor = previewAnchor;
+    if (anchor != null && (previewFactor - 1).abs() > 1e-6) {
+      canvas.translate(anchor.dx, anchor.dy);
+      canvas.scale(previewFactor);
+      canvas.translate(-anchor.dx, -anchor.dy);
+    }
+    canvas.translate(origin.dx, origin.dy);
+  }
+
+  void _paintPreviewPage(Canvas canvas, _SelectionPreview pv) {
+    final o = _shift(Offset.zero, pv.page);
+    final base = pv.base;
+    final selected = pv.selected;
+    // 底圖內容（不含選取物）：頁內座標 → 堆疊座標。
+    final baseHl = base.highlighters;
+    if (baseHl != null) {
+      canvas.save();
+      canvas.translate(o.dx, o.dy);
+      canvas.drawPicture(baseHl);
+      canvas.restore();
+    }
+    // 選取物按同一 layer 位置插回；螢光筆仍全局墊底。
+    final layers = <int>{
+      ...base.layers.keys,
+      ...selected.layers.keys,
+    }.toList()
+      ..sort();
+    _paintPreviewPicture(canvas, selected.highlighters, o);
+    for (final layer in layers) {
+      final basePic = base.layers[layer];
+      if (basePic != null) {
+        canvas.save();
+        canvas.translate(o.dx, o.dy);
+        canvas.drawPicture(basePic);
+        canvas.restore();
+      }
+      _paintPreviewPicture(canvas, selected.layers[layer], o);
+    }
+  }
+
+  void _paintPreviewPicture(Canvas canvas, ui.Picture? pic, Offset origin) {
+    if (pic == null) return;
+    canvas.save();
+    _applyPreviewTransform(canvas, origin: origin);
+    canvas.drawPicture(pic);
+    canvas.restore();
   }
 
   @override
@@ -1480,8 +1984,20 @@ class _InkPainter extends CustomPainter {
     // 貼圖已按圖層烘進 completed，這裡只畫選中框）
     final bgPic = bg;
     if (bgPic != null) canvas.drawPicture(bgPic);
-    final pic = completed;
-    if (pic != null) canvas.drawPicture(pic);
+    final pageCount = pageRects.isEmpty ? 1 : pageRects.length;
+    for (var page = 0; page < pageCount; page++) {
+      if (selectionPreview != null && selectionPreview!.page == page) {
+        _paintPreviewPage(canvas, selectionPreview!);
+        continue;
+      }
+      final pics = pages[page];
+      if (pics == null) continue;
+      canvas.save();
+      final o = _shift(Offset.zero, page);
+      canvas.translate(o.dx, o.dy);
+      pics.draw(canvas);
+      canvas.restore();
+    }
     // 停頓預覽：藏原軌跡，直接畫預測形狀（頁內 → 堆疊）
     final preview = snapPreview;
     if (preview != null) {
@@ -1508,7 +2024,8 @@ class _InkPainter extends CustomPainter {
     }
     _paintDashedLoop(canvas, lassoPath, const Color(0xFF757575));
     // 選中物件的虛線框：包圍盒矩形（堆疊座標，直接畫）
-    final box = selectionRect;
+    final box =
+        selectionPreview == null && !imagePreview ? selectionRect : null;
     if (box != null) {
       _paintDashedLoop(canvas, [
         box.topLeft,
@@ -1552,35 +2069,81 @@ class _InkPainter extends CustomPainter {
         );
       }
     }
-    // 選中圖片的虛線框（單選另帶右下縮放手柄；堆疊座標，直接畫）
-    for (final m in images) {
-      final isSel =
-          m.id == selectedImageId || selectedImageIds.contains(m.id);
-      if (!isSel) continue;
-      final o = _shift(Offset.zero, m.page);
-      final box = Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h);
+    // 拖曳預覽中的選取框跟著內容一起變形（不畫手柄，手勢中不可再抓）。
+    if (selectionPreview != null && !imagePreview && selectionRect != null) {
+      final r = selectionRect!;
+      canvas.save();
+      _applyPreviewTransform(canvas);
       _paintDashedLoop(canvas, [
-        box.topLeft,
-        box.topRight,
-        box.bottomRight,
-        box.bottomLeft,
-        box.topLeft,
+        r.topLeft,
+        r.topRight,
+        r.bottomRight,
+        r.bottomLeft,
+        r.topLeft,
       ], const Color(0xFF3B5BFD));
-      if (m.id != selectedImageId) continue;
-      final handle = box.bottomRight;
+      canvas.restore();
+    }
+    // 圈選縮放手柄（右下角；筆跡＋圖片統一，斜線示意可拖）
+    final resize =
+        selectionPreview == null && !imagePreview ? scaleHandle : null;
+    if (resize != null) {
       canvas.drawCircle(
-        handle,
+        resize,
         12 / scale,
         Paint()..color = const Color(0xFF3B5BFD),
       );
       canvas.drawCircle(
-        handle,
+        resize,
         12 / scale,
         Paint()
           ..color = Colors.white
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2 / scale,
       );
+      final arm = Offset(4 / scale, 4 / scale);
+      canvas.drawLine(
+        resize - arm,
+        resize + arm,
+        Paint()
+          ..color = Colors.white
+          ..strokeWidth = 2 / scale
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+    // 選中圖片的虛線框（單選另帶右下縮放手柄；堆疊座標，直接畫）
+    if (selectionPreview == null || imagePreview) {
+      canvas.save();
+      if (imagePreview) _applyPreviewTransform(canvas);
+      for (final m in images) {
+        final isSel =
+            m.id == selectedImageId || selectedImageIds.contains(m.id);
+        if (!isSel) continue;
+        final o = _shift(Offset.zero, m.page);
+        final box = Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h);
+        _paintDashedLoop(canvas, [
+          box.topLeft,
+          box.topRight,
+          box.bottomRight,
+          box.bottomLeft,
+          box.topLeft,
+        ], const Color(0xFF3B5BFD));
+        if (m.id != selectedImageId) continue;
+        final handle = box.bottomRight;
+        canvas.drawCircle(
+          handle,
+          12 / scale,
+          Paint()..color = const Color(0xFF3B5BFD),
+        );
+        canvas.drawCircle(
+          handle,
+          12 / scale,
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2 / scale,
+        );
+      }
+      canvas.restore();
     }
     canvas.restore();
   }

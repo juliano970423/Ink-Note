@@ -135,6 +135,29 @@ class Stroke {
         hlw: hlw,
       );
 
+  /// 整筆以 [anchor] 為錨點等比縮放（圈選縮放用）。
+  /// 線寬一起縮，壓感/時間戳保留。
+  Stroke scaled(Offset anchor, double factor) => Stroke(
+        color: color,
+        size: (size * factor).clamp(0.25, 200.0),
+        points: points
+            .map((p) => NotePoint(
+                  x: anchor.dx + (p.x - anchor.dx) * factor,
+                  y: anchor.dy + (p.y - anchor.dy) * factor,
+                  p: p.p,
+                  t: p.t,
+                ))
+            .toList(),
+        page: page,
+        layer: layer,
+        type: type,
+        alpha: alpha,
+        geometric: geometric,
+        thinning: thinning,
+        streamline: streamline,
+        hlw: hlw,
+      );
+
   /// 整筆繞 [center] 旋轉 [radians]（圈選旋轉用，壓感/時間戳保留）。
   Stroke rotated(Offset center, double radians) {
     final c = cos(radians), s = sin(radians);
@@ -289,6 +312,14 @@ class NoteImage {
   /// 等比縮放（錨定左上，w/h 同比）。
   NoteImage scaled(double factor) =>
       copyWith(w: (w * factor).clamp(8, 4000), h: (h * factor).clamp(8, 4000));
+
+  /// 以 [anchor] 為錨點等比縮放（圈選統一縮放用；位置一起縮）。
+  NoteImage scaledFrom(Offset anchor, double factor) => copyWith(
+        x: anchor.dx + (x - anchor.dx) * factor,
+        y: anchor.dy + (y - anchor.dy) * factor,
+        w: (w * factor).clamp(8, 4000),
+        h: (h * factor).clamp(8, 4000),
+      );
 
   /// 命中測試（頁內座標）。
   bool contains(Offset p) =>

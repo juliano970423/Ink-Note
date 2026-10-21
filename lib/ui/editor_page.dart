@@ -93,6 +93,9 @@ class _EditorPageState extends State<EditorPage> {
   double _scale = 1.0;
   Set<Stroke> _selected = {};
   int _selectionPage = 0;
+  /// 這批選取是否來自圈選（含圖片；tap 單圖不算）。
+  /// 圈選圖片也要吃統一選取框／旋轉／縮放手柄。
+  bool _lassoSelection = false;
 
   /// 選中物件的虛線框（堆疊座標）：包圍盒外擴，零高度選區也看得見。
   Rect? get _selectionRect {
@@ -217,6 +220,7 @@ class _EditorPageState extends State<EditorPage> {
       _noteImgs = {};
       _imgNote = _note;
       _selectedImageIds = {};
+      _lassoSelection = false;
     }
     for (final m in _note.images) {
       if (_noteImgs.containsKey(m.id)) continue;
@@ -1112,9 +1116,7 @@ class _EditorPageState extends State<EditorPage> {
   int _activeLayer = 0;
 
   _HistoryEntry _snapshot() => _HistoryEntry(
-        strokes: _note.strokes
-            .map((s) => s.copyWith(points: List<NotePoint>.from(s.points)))
-            .toList(),
+        strokes: List<Stroke>.from(_note.strokes),
         layerNames: List<String>.from(_note.layerNames),
         hidden: List<int>.from(_note.hiddenLayers),
         active: _activeLayer,
@@ -1134,9 +1136,7 @@ class _EditorPageState extends State<EditorPage> {
       );
 
   void _restore(_HistoryEntry snap) {
-    _note.strokes = snap.strokes
-        .map((s) => s.copyWith(points: List<NotePoint>.from(s.points)))
-        .toList();
+    _note.strokes = List<Stroke>.from(snap.strokes);
     _note.layerNames = List<String>.from(snap.layerNames);
     _note.hiddenLayers = List<int>.from(snap.hidden);
     _activeLayer =
@@ -1194,9 +1194,9 @@ class _EditorPageState extends State<EditorPage> {
       _note.hiddenLayers.remove(_activeLayer);
     }
     final sl = s.copyWith(layer: _activeLayer);
-    // 形狀修正（僅筆刷筆；收筆前停頓滿 1s 才判，快掃不停留的不碰）
+    // 形狀修正（筆刷／虛線／螢光；收筆前停頓滿 1s 才判，快掃不停留的不碰）
     final out = (widget.settings.shapeSnap &&
-            PenTypeLabel.parse(sl.type) == PenType.brush)
+            canSnapShape(PenTypeLabel.parse(sl.type)))
         ? snapShape(sl, dwellMs: dwellMs)
         : [sl];
     final didSnap = out.length != 1 || !identical(out.first, sl);
@@ -1221,7 +1221,7 @@ class _EditorPageState extends State<EditorPage> {
       ]));
       if (_undoStack.length > _historyCap) _undoStack.removeAt(0);
     }
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(sl.page);
     _scheduleAutosave();
   }
 
@@ -1237,7 +1237,7 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   /// 按筆畫橡皮即刪（拖抹中逐段回調，頁內座標）：碰到整筆立刻消失；
-  /// 整個拖抹會話只在首刪時 checkpoint 一次，一次 undo 整批回來。
+  /// 只擦使用中圖層，整個拖抹會話只在首刪時 checkpoint 一次。
   /// 點按空白（沒刪到）不留 checkpoint。
   bool _eraseSessionActive = false;
 
@@ -1247,6 +1247,7 @@ class _EditorPageState extends State<EditorPage> {
       for (var i = _note.strokes.length - 1; i >= 0; i--) {
         final s = _note.strokes[i];
         if (s.page == page &&
+            s.layer == _activeLayer &&
             !_note.hiddenLayers.contains(s.layer) &&
             !hit.contains(s) &&
             hitStroke(s, pos, threshold: _strokeThreshold)) {
@@ -1261,7 +1262,7 @@ class _EditorPageState extends State<EditorPage> {
     }
     setState(() => _note.strokes.removeWhere((s) => hit.contains(s)));
     _pruneSelection();
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(page);
   }
 
   /// 按筆畫橡皮會話結束（抬起/取消）：有刪才存檔結算。
@@ -1269,11 +1270,10 @@ class _EditorPageState extends State<EditorPage> {
     if (!_eraseSessionActive) return;
     _eraseSessionActive = false;
     _reclampPan();
-    _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
 
-  /// 像素橡皮按段即刪（拖動中逐段回調）：沿段抹除並斷筆，隱藏圖層不碰；
+  /// 像素橡皮按段即刪（拖動中逐段回調）：沿段抹除並斷筆，只碰使用中圖層；
   /// 整個拖抹只在首刪時 checkpoint，一次 undo 整批回來。
   void _onPixelEraseTick(List<Offset> chunk, int page) {
     final radius = _pixelRadius;
@@ -1282,7 +1282,9 @@ class _EditorPageState extends State<EditorPage> {
     for (final pos in _densePath(chunk, radius / 2)) {
       final next = <Stroke>[];
       for (final s in cur) {
-        if (s.page != page || _note.hiddenLayers.contains(s.layer)) {
+        if (s.page != page ||
+            s.layer != _activeLayer ||
+            _note.hiddenLayers.contains(s.layer)) {
           next.add(s);
           continue;
         }
@@ -1304,7 +1306,7 @@ class _EditorPageState extends State<EditorPage> {
     }
     setState(() => _note.strokes = cur);
     _pruneSelection();
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(page);
   }
 
   /// 像素橡皮會話結束（抬起/取消）：有刪才存檔結算。
@@ -1312,7 +1314,6 @@ class _EditorPageState extends State<EditorPage> {
     if (!_eraseSessionActive) return;
     _eraseSessionActive = false;
     _reclampPan();
-    _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
   }
 
@@ -1363,6 +1364,7 @@ class _EditorPageState extends State<EditorPage> {
     _moveArmed = false;
     setState(() {
       _selected = {};
+      _lassoSelection = false;
       _note.images.add(meta);
       _selectedImageIds = {meta.id};
     });
@@ -1416,7 +1418,12 @@ class _EditorPageState extends State<EditorPage> {
   /// 圖片點選（畫布 tap 回調；選中時才清圈選，空點只清圖選，筆跡選區不動）。
   void _onImageSelected(String? id) {
     setState(() {
-      if (id != null) _deselect();
+      if (id != null) {
+        _deselect();
+        _lassoSelection = false;
+        final i = _note.images.indexWhere((m) => m.id == id);
+        if (i >= 0) _selectionPage = _note.images[i].page;
+      }
       _selectedImageIds = id == null ? {} : {id};
     });
   }
@@ -1433,10 +1440,11 @@ class _EditorPageState extends State<EditorPage> {
   void _onImageChanged(String id, double x, double y, double w, double h) {
     final i = _note.images.indexWhere((m) => m.id == id);
     if (i < 0) return;
+    final page = _note.images[i].page;
     setState(() {
       _note.images[i] = _note.images[i].copyWith(x: x, y: y, w: w, h: h);
     });
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(page);
   }
 
   /// 圖片拖動結束：結算存檔。
@@ -1471,25 +1479,34 @@ class _EditorPageState extends State<EditorPage> {
   void _clearSelection() {
     _selected = {};
     _selectedImageIds = {};
+    _lassoSelection = false;
   }
 
   void _pruneSelection() {
     _selected.removeWhere((s) =>
         !_note.strokes.contains(s) ||
+        s.layer != _activeLayer ||
         _note.hiddenLayers.contains(s.layer));
-    _selectedImageIds.removeWhere((id) =>
-        !_note.images.any((m) => m.id == id) ||
-        _note.hiddenLayers.contains(
-            _note.images.firstWhere((m) => m.id == id).layer));
+    _selectedImageIds.removeWhere((id) {
+      final matches = _note.images.where((m) => m.id == id);
+      if (matches.isEmpty) return true;
+      final layer = matches.first.layer;
+      return layer != _activeLayer || _note.hiddenLayers.contains(layer);
+    });
+    if (_selected.isEmpty && _selectedImageIds.isEmpty) {
+      _lassoSelection = false;
+    }
   }
 
   void _onLassoCompleted(List<Offset> loop, int page) {
     // 選筆用頁內座標算（虛線框直接按包圍盒畫，不存套索路徑）；
-    // 隱藏圖層不圈。舊選區先結算（出紙裁掉）再換新。
+    // 只圈使用中圖層。舊選區先結算（出紙裁掉）再換新。
     // 同圈圖片一起選中（可與筆跡共存，移動/旋轉/複製/刪除一起走）。
     var clipped = false;
     late List<Stroke> hits;
     late Set<String> imgHits;
+    // 圈選是新選取，清掉畫布上殘留的 tap 單圖手柄；統一框改吃 selectionBounds。
+    _canvasKey.currentState?.selectImageLocal(null);
     setState(() {
       clipped = _clipDeselected();
       _moveArmed = false;
@@ -1502,13 +1519,17 @@ class _EditorPageState extends State<EditorPage> {
       hits = selectStrokes(
           _note.strokes
               .where((s) =>
-                  s.page == page && !_note.hiddenLayers.contains(s.layer))
+                  s.page == page &&
+                  s.layer == _activeLayer &&
+                  !_note.hiddenLayers.contains(s.layer))
               .toList(),
           local);
       imgHits = selectImages(
           _note.images
               .where((m) =>
-                  m.page == page && !_note.hiddenLayers.contains(m.layer))
+                  m.page == page &&
+                  m.layer == _activeLayer &&
+                  !_note.hiddenLayers.contains(m.layer))
               .toList(),
           local).map((m) => m.id).toSet();
       if (hits.isEmpty && imgHits.isEmpty) {
@@ -1517,10 +1538,11 @@ class _EditorPageState extends State<EditorPage> {
         _selected = hits.toSet();
         _selectedImageIds = imgHits;
         _selectionPage = page;
+        _lassoSelection = true;
       }
     });
     if (clipped) {
-      _canvasKey.currentState?.invalidateCache();
+      _canvasKey.currentState?.invalidatePage(page);
       _scheduleAutosave();
     }
   }
@@ -1552,7 +1574,7 @@ class _EditorPageState extends State<EditorPage> {
           _selectedImageIds.contains(m.id) ? m.moved(delta) : m,
       ];
     });
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(_selectionPage);
     _scheduleAutosave();
   }
 
@@ -1603,7 +1625,46 @@ class _EditorPageState extends State<EditorPage> {
             }(),
       ];
     });
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(_selectionPage);
+    _scheduleAutosave();
+  }
+
+  /// 圈選縮放：手柄拖動的等比增量（[anchor] 為堆疊座標左上角）。
+  /// 筆跡與圖片一起縮，與移動/旋轉同一個 undo 作用域。
+  void _onSelectionScale(double factor, Offset anchor) {
+    if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
+    if (!_moveArmed) {
+      _checkpoint();
+      _moveArmed = true;
+    }
+    final off = _pageRects.isEmpty ||
+            _selectionPage < 0 ||
+            _selectionPage >= _pageRects.length
+        ? Offset.zero
+        : Offset(0, _pageRects[_selectionPage].top - 24);
+    final aLocal = anchor - off;
+    final scaled = <Stroke>{};
+    final next = <Stroke>[];
+    for (final s in _note.strokes) {
+      if (_selected.contains(s)) {
+        final r = s.scaled(aLocal, factor);
+        next.add(r);
+        scaled.add(r);
+      } else {
+        next.add(s);
+      }
+    }
+    setState(() {
+      _note.strokes = next;
+      _selected = scaled;
+      _note.images = [
+        for (final m in _note.images)
+          _selectedImageIds.contains(m.id)
+              ? m.scaledFrom(aLocal, factor)
+              : m,
+      ];
+    });
+    _canvasKey.currentState?.invalidatePage(_selectionPage);
     _scheduleAutosave();
   }
 
@@ -1645,7 +1706,7 @@ class _EditorPageState extends State<EditorPage> {
     final clipped = _clipDeselected();
     _clearSelection();
     if (clipped) {
-      _canvasKey.currentState?.invalidateCache();
+      _canvasKey.currentState?.invalidatePage(_selectionPage);
       _scheduleAutosave();
     }
   }
@@ -1653,6 +1714,7 @@ class _EditorPageState extends State<EditorPage> {
   void _deleteSelection() {
     if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
     _checkpoint();
+    final page = _selectionPage;
     final imgIds = Set<String>.from(_selectedImageIds);
     for (final id in imgIds) {
       _noteImgs.remove(id)?.dispose();
@@ -1663,7 +1725,7 @@ class _EditorPageState extends State<EditorPage> {
       _clearSelection();
     });
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
-    _canvasKey.currentState?.invalidateCache();
+    _canvasKey.currentState?.invalidatePage(page);
     _scheduleAutosave();
   }
 
@@ -1739,6 +1801,7 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       _note.layerNames.add('圖層 ${_note.layerNames.length + 1}');
       _activeLayer = _note.layerNames.length - 1;
+      _pruneSelection();
     });
     _canvasKey.currentState?.invalidateCache();
     _scheduleAutosave();
@@ -2017,7 +2080,6 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Rect? get _selectionBounds {
-    if (_selected.isEmpty) return null;
     var minX = double.infinity,
         minY = double.infinity,
         maxX = -double.infinity,
@@ -2028,6 +2090,17 @@ class _EditorPageState extends State<EditorPage> {
         if (pt.y < minY) minY = pt.y;
         if (pt.x > maxX) maxX = pt.x;
         if (pt.y > maxY) maxY = pt.y;
+      }
+    }
+    // 圈選圖片與筆跡共用同一個選取框（tap 單圖仍走畫布自己的手柄）。
+    if (_lassoSelection) {
+      for (final m in _note.images) {
+        if (!_selectedImageIds.contains(m.id)) continue;
+        if (m.page != _selectionPage) continue;
+        if (m.x < minX) minX = m.x;
+        if (m.y < minY) minY = m.y;
+        if (m.x + m.w > maxX) maxX = m.x + m.w;
+        if (m.y + m.h > maxY) maxY = m.y + m.h;
       }
     }
     if (minX == double.infinity) return null;
@@ -2319,6 +2392,7 @@ class _EditorPageState extends State<EditorPage> {
                   onImageDragStart: _onImageDragStart,
                   onImageChanged: _onImageChanged,
                   onImageDragEnd: _onImageDragEnd,
+                  selectedStrokes: _selected,
                   selectedImageIds: _selectedImageIds,
                   panOffset: _panOffset,
                   scale: _scale,
@@ -2332,6 +2406,7 @@ class _EditorPageState extends State<EditorPage> {
                   onLassoCompleted: _onLassoCompleted,
                   onSelectionMove: _onSelectionMove,
                   onSelectionRotate: _onSelectionRotate,
+                  onSelectionScale: _onSelectionScale,
                   onDeselect: () => setState(_deselect),
                   onPageFlick: _onPageFlick,
                   onTwoFingerDoubleTap: _undo,
@@ -2340,6 +2415,7 @@ class _EditorPageState extends State<EditorPage> {
                   selectionPage: _selectionPage,
                   selectionRect: _selectionRect,
                   hiddenLayers: _note.hiddenLayers,
+                  activeLayer: _activeLayer,
                   pageRects: _pageRects,
                   pixelRadius: _pixelRadius,
                   strokeThreshold: _strokeThreshold,

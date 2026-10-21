@@ -897,21 +897,24 @@ void main() {
     await g.moveTo(const Offset(170, 160));
     await tester.pump();
     expect(starts, 1);
-    expect(changed.isNotEmpty, isTrue);
-    expect(changed.last[0], greaterThan(100));
-    expect(changed.last[1], greaterThan(100));
+    expect(changed, isEmpty);
     await g.up();
     await tester.pump();
+    expect(changed.length, 1);
+    expect(changed.last[0], greaterThan(100));
+    expect(changed.last[1], greaterThan(100));
     expect(ends, 1);
     // 右下手柄拖＝等比縮放（測試直連畫布、meta 不回寫，手柄仍在初值 300,200）
     final g2 = await tester.startGesture(const Offset(300, 200),
         kind: ui.PointerDeviceKind.stylus);
     await g2.moveTo(const Offset(320, 220));
     await tester.pump();
-    expect(changed.last[2], greaterThan(200));
-    expect(changed.last[3], greaterThan(100));
+    expect(changed.length, 1);
     await g2.up();
     await tester.pump();
+    expect(changed.length, 2);
+    expect(changed.last[2], greaterThan(200));
+    expect(changed.last[3], greaterThan(100));
     expect(ends, 2);
     // 點空白取消選中
     await stylusTap(const Offset(500, 500));
@@ -1068,6 +1071,91 @@ void main() {
     expect(strokes, 3);
   });
 
+  testWidgets('lasso image hit only active layer', (tester) async {
+    String? selected;
+    Widget buildCanvas(int activeLayer) => MaterialApp(
+          home: Scaffold(
+            body: InkCanvas(
+              strokes: const [],
+              params: StrokeParams(
+                  maxSpeed: 1800,
+                  emaWeight: 0.6,
+                  thinning: 0.6,
+                  streamline: 0.5,
+                  size: 4.0),
+              color: '#000000',
+              size: 4.0,
+              penType: PenType.brush,
+              tool: ToolMode.lasso,
+              palmRejection: false,
+              activeLayer: activeLayer,
+              onStrokeCompleted: (_, _) {},
+              onStrokeEraseTick: (_, _) {},
+              onStrokeEraseEnd: () {},
+              onPixelEraseTick: (_, _) {},
+              onPixelEraseEnd: () {},
+              onImageSelected: (id) {
+                selected = id;
+              },
+              onImageDragStart: () {},
+              onImageChanged: (id, x, y, w, h) {},
+              onImageDragEnd: () {},
+              images: const [
+                NoteImage(
+                    id: 'im0',
+                    page: 0,
+                    x: 100,
+                    y: 100,
+                    w: 200,
+                    h: 100,
+                    layer: 0),
+                NoteImage(
+                    id: 'im1',
+                    page: 0,
+                    x: 400,
+                    y: 100,
+                    w: 200,
+                    h: 100,
+                    layer: 1),
+              ],
+              panOffset: Offset.zero,
+              scale: 1.0,
+              onPanUpdate: (_) {},
+              onZoomUpdate: (_, _) {},
+              onZoomEnd: () {},
+              onPageFlick: (_) {},
+              onTwoFingerDoubleTap: () {},
+              onTwoFingerTripleTap: () {},
+              onLassoCompleted: (_, _) {},
+              onSelectionMove: (_) {},
+              onSelectionRotate: (_, _) {},
+              onDeselect: () {},
+            ),
+          ),
+        );
+    Future<void> tap(Offset p) async {
+      final g = await tester.startGesture(p,
+          kind: ui.PointerDeviceKind.stylus);
+      await g.up();
+      await tester.pump();
+    }
+
+    await tester.pumpWidget(buildCanvas(1));
+    await tester.pumpAndSettle();
+    await tap(const Offset(150, 150));
+    expect(selected, isNull);
+    await tap(const Offset(450, 150));
+    expect(selected, 'im1');
+
+    selected = null;
+    await tester.pumpWidget(buildCanvas(0));
+    await tester.pumpAndSettle();
+    await tap(const Offset(450, 150));
+    expect(selected, isNull);
+    await tap(const Offset(150, 150));
+    expect(selected, 'im0');
+  });
+
   testWidgets('pen drags selected image; tap outside deselects, no dot',
       (tester) async {
     String? selected;
@@ -1138,10 +1226,11 @@ void main() {
     await g.moveTo(const Offset(170, 160));
     await tester.pump();
     expect(starts, 1);
-    expect(changed.isNotEmpty, isTrue);
-    expect(changed.last[0], greaterThan(100));
+    expect(changed, isEmpty);
     await g.up();
     await tester.pump();
+    expect(changed.length, 1);
+    expect(changed.last[0], greaterThan(100));
     expect(ends, 1);
     expect(strokes, 0);
     expect(selected, 'im1');

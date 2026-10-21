@@ -361,6 +361,27 @@ void main() {
     }
   });
 
+  test('canSnapShape：筆刷/虛線/螢光都可，修正後保留原筆型', () {
+    expect(canSnapShape(PenType.brush), isTrue);
+    expect(canSnapShape(PenType.dashed), isTrue);
+    expect(canSnapShape(PenType.highlighter), isTrue);
+    for (final type in [PenType.dashed, PenType.highlighter]) {
+      final s = Stroke(
+        color: '#000',
+        size: 4,
+        type: type.name,
+        points: [
+          for (var i = 0; i <= 20; i++)
+            NotePoint(x: i * 10.0, y: (i % 2) * 2.0, p: 1, t: i * 8),
+        ],
+      );
+      final out = snapShape(s, dwellMs: 1100);
+      expect(out.first.type, type.name);
+      expect(out.first.points.length, 2);
+      expect(out.first.geometric, isTrue);
+    }
+  });
+
   test('clipStrokeToRect：紙外丟掉，跨界插值', () {
     const r = Rect.fromLTWH(0, 0, 100, 100);
     Stroke line(List<Offset> pts) => Stroke(
