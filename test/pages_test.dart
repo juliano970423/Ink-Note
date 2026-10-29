@@ -456,4 +456,91 @@ void main() {
     await tester.pump();
     expect(loaded.strokes.last.points.first.x, closeTo(before + 40, 1.0));
   });
+
+  testWidgets('跨頁書寫：空隙丟棄、切成兩筆，undo 一次還原', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.add(const Stroke(color: '#000000', size: 4.0, points: [
+      NotePoint(x: 100, y: 100, p: 1.0, t: 0),
+      NotePoint(x: 120, y: 120, p: 1.0, t: 10),
+    ], page: 1));
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    final before = loaded.strokes.length;
+    final ink = tester.widget<InkCanvas>(find.byType(InkCanvas));
+    expect(ink.pageRects.length, 2);
+    final rects = ink.pageRects;
+    final topLeft = tester.getTopLeft(find.byType(InkCanvas));
+    Offset screen(Offset stacked) =>
+        topLeft + ink.panOffset + stacked * ink.scale;
+    final x = rects[0].center.dx;
+    final g = await tester.startGesture(
+        screen(Offset(x, rects[0].bottom - 20)));
+    await g.moveTo(screen(Offset(x, rects[0].bottom + 8)));
+    await g.moveTo(screen(Offset(x, rects[1].top + 80)));
+    await g.up();
+    final state = tester.state<InkCanvasState>(find.byType(InkCanvas));
+    // 放筆後、快取重建前先保留，避免閃一幀
+    expect(state.debugHeldStrokeCount, greaterThan(0));
+    await tester.pumpAndSettle();
+    expect(state.debugHeldStrokeCount, 0);
+
+    final added = loaded.strokes.skip(before).toList();
+    expect(added.map((s) => s.page), [0, 1]);
+    for (final s in added) {
+      final rect = rects[s.page];
+      for (final p in s.points) {
+        expect(p.y, inInclusiveRange(24, 24 + rect.height));
+      }
+    }
+    // 頁間 48px 空隙沒有墨跡：第 1 頁停在紙底，第 2 頁從頁首開始
+    expect(added[0].points.last.y, closeTo(24 + rects[0].height, 0.01));
+    expect(added[1].points.first.y, closeTo(24, 0.01));
+
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    expect(loaded.strokes.length, before);
+  });
+
+  testWidgets('末頁往下畫：仍鉗制在既有末頁，不自動新增頁', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final store = MemoryNoteStore();
+    await store.save(_a4note());
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    final before = loaded.strokes.length;
+    final ink = tester.widget<InkCanvas>(find.byType(InkCanvas));
+    expect(ink.pageRects.length, 1);
+    final rect = ink.pageRects.single;
+    final topLeft = tester.getTopLeft(find.byType(InkCanvas));
+    Offset screen(Offset stacked) =>
+        topLeft + ink.panOffset + stacked * ink.scale;
+    final x = rect.center.dx;
+    final g = await tester.startGesture(
+        screen(Offset(x, rect.bottom - 20)));
+    await g.moveTo(screen(Offset(x, rect.bottom + 120)));
+    await g.up();
+    await tester.pumpAndSettle();
+    expect(loaded.strokes.length, before + 1);
+    final added = loaded.strokes.last;
+    expect(added.page, 0);
+    expect(added.points.last.y, closeTo(24 + rect.height, 0.01));
+    expect(find.text('第 1/1 頁'), findsOneWidget);
+  });
 }

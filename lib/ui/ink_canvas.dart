@@ -154,6 +154,8 @@ class InkCanvas extends StatefulWidget {
 
 class InkCanvasState extends State<InkCanvas> {
   LiveStroke? _live;
+  // 剛放筆、頁面快取還沒重建完成前，先保留已提交的筆跡，避免閃一幀。
+  List<Stroke> _heldStrokes = const [];
   ink.VelocityTracker _tracker = ink.VelocityTracker();
   List<Offset> _liveOutline = [];
   final Map<int, _PagePics> _pagePics = {};
@@ -320,6 +322,7 @@ class InkCanvasState extends State<InkCanvas> {
 
   /// 外部筆畫/參數/頁碼變化後調用：全部頁面重建、好了才換（無閃白）。
   void invalidateCache() {
+    _heldStrokes = const [];
     _allPagesDirty = true;
     _bgDirty = true;
     _dirtyPages.clear();
@@ -603,6 +606,14 @@ class InkCanvasState extends State<InkCanvas> {
           _pagePics.remove(page)?.dispose();
           _pagePics[page] = pics;
         });
+        if (_heldStrokes.isNotEmpty && !_allPagesDirty) {
+          _heldStrokes = [
+            for (final s in _heldStrokes)
+              if (!(built.containsKey(s.page) &&
+                  !_dirtyPages.contains(s.page)))
+                s,
+          ];
+        }
       });
       final preview = _selectionPreview;
       if (_previewClearAfterBuild &&
@@ -659,6 +670,28 @@ class InkCanvasState extends State<InkCanvas> {
       p.dx.clamp(24.0, 24 + r.width),
       p.dy.clamp(24.0, 24 + r.height),
     );
+  }
+
+  /// 拖曳中的書寫點：x 留在頁寬內，y 可跨到既有頁；不超出首/末頁。
+  Offset _writeLocal(Offset stacked, int page) {
+    if (!_stacked) return stacked;
+    final r = widget.pageRects[page];
+    final y = stacked.dy.clamp(24.0, widget.pageRects.last.bottom);
+    return _localOf(Offset(stacked.dx.clamp(24.0, 24 + r.width), y), page);
+  }
+
+  @visibleForTesting
+  int get debugHeldStrokeCount => _heldStrokes.length;
+
+  /// 與 editor 提交時相同的形狀修正 + 切頁結果（僅供放筆後的暫存顯示）。
+  List<Stroke> _committedDisplay(Stroke raw, int dwellMs) {
+    final type = PenTypeLabel.parse(raw.type);
+    final snapped = widget.shapeSnap && canSnapShape(type)
+        ? snapShape(raw, dwellMs: dwellMs)
+        : [raw];
+    return [
+      for (final s in snapped) ...splitStrokeAcrossPages(s, widget.pageRects),
+    ];
   }
 
   /// 選區 bounds（頁內）→ 堆疊座標（命中/手柄用）。
@@ -1258,7 +1291,7 @@ class InkCanvasState extends State<InkCanvas> {
     }
     final live = _live;
     if (live == null) return;
-    final pos = _clampLocal(_localOf(stacked, live.page), live.page);
+    final pos = _writeLocal(stacked, live.page);
     final last = live.positions.last;
     // 去重：近乎重合的點不收（防按住抖結坨），其餘全收保形狀——
     // 小字慢寫的相鄰點只有 1~3px，6px 一刀切會把彎拉成直線（「2」變「1」）。
@@ -1617,17 +1650,25 @@ class InkCanvasState extends State<InkCanvas> {
     if (live.positions.length == 1) {
       // 單點：保留為點筆（渲染為圓）
     } else {
-      // 收尾补一点：中途丢帧导致笔画偏短时对齐到 up 位置（落筆頁內）
-      final end = _clampLocal(_localOf(_content(e.localPosition), live.page),
-          live.page);
+      // 收尾补一点：中途丢帧导致笔画偏短时对齐到 up 位置（可跨頁）
+      final end = _writeLocal(_content(e.localPosition), live.page);
       if ((end - live.positions.last).distance > 1) {
         live.positions.add(end);
         live.pressures.add(live.pressures.last);
         live.times.add(e.timeStamp);
       }
     }
-    setState(() => _liveOutline = []);
-    widget.onStrokeCompleted(live.toStroke(), dwellMs);
+    final raw = live.toStroke();
+    final display = _committedDisplay(raw, dwellMs);
+    setState(() {
+      _liveOutline = [];
+      if (display.isNotEmpty) _heldStrokes = [..._heldStrokes, ...display];
+    });
+    widget.onStrokeCompleted(raw, dwellMs);
+    // 不依賴上層是否剛好標 dirty：自己排重建，held 才會在快取換上後清掉。
+    for (final page in {for (final s in display) s.page}) {
+      invalidatePage(page);
+    }
   }
 
   void _onCancel(PointerCancelEvent e) {
@@ -1751,6 +1792,7 @@ class InkCanvasState extends State<InkCanvas> {
             liveOutline: _liveOutline,
             livePositions: _live?.positions,
             livePage: _live?.page ?? 0,
+            heldStrokes: _heldStrokes,
             snapPreview: _snapPreview,
             liveColor: _live?.color,
             livePenType: _live?.penType ?? widget.penType,
@@ -1837,6 +1879,8 @@ class _InkPainter extends CustomPainter {
   final List<Offset>? livePositions;
   /// 進行中筆畫所在頁（頁內座標 → 堆疊需平移）。
   final int livePage;
+  /// 已提交但頁面快取尚未重建完成的筆跡（避免放筆閃一幀）。
+  final List<Stroke> heldStrokes;
   final List<Stroke>? snapPreview;
   final String? liveColor;
   final PenType livePenType;
@@ -1875,6 +1919,7 @@ class _InkPainter extends CustomPainter {
     required this.liveOutline,
     required this.livePositions,
     required this.livePage,
+    required this.heldStrokes,
     required this.snapPreview,
     required this.liveColor,
     required this.livePenType,
@@ -1984,6 +2029,7 @@ class _InkPainter extends CustomPainter {
     // 貼圖已按圖層烘進 completed，這裡只畫選中框）
     final bgPic = bg;
     if (bgPic != null) canvas.drawPicture(bgPic);
+    _paintHeldStrokes(canvas, highlighters: true);
     final pageCount = pageRects.isEmpty ? 1 : pageRects.length;
     for (var page = 0; page < pageCount; page++) {
       if (selectionPreview != null && selectionPreview!.page == page) {
@@ -1998,6 +2044,7 @@ class _InkPainter extends CustomPainter {
       pics.draw(canvas);
       canvas.restore();
     }
+    _paintHeldStrokes(canvas, highlighters: false);
     // 停頓預覽：藏原軌跡，直接畫預測形狀（頁內 → 堆疊）
     final preview = snapPreview;
     if (preview != null) {
@@ -2146,6 +2193,18 @@ class _InkPainter extends CustomPainter {
       canvas.restore();
     }
     canvas.restore();
+  }
+
+  void _paintHeldStrokes(Canvas canvas, {required bool highlighters}) {
+    for (final s in heldStrokes) {
+      final isHl = PenTypeLabel.parse(s.type) == PenType.highlighter;
+      if (isHl != highlighters) continue;
+      final o = _shift(Offset.zero, s.page);
+      canvas.save();
+      canvas.translate(o.dx, o.dy);
+      paintStroke(canvas, s, hlWidth: hlWidth, params: params);
+      canvas.restore();
+    }
   }
 
   void _paintLive(Canvas canvas) {

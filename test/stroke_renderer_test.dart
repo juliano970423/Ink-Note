@@ -369,6 +369,8 @@ void main() {
       final s = Stroke(
         color: '#000',
         size: 4,
+        layer: 3,
+        alpha: 0.35,
         type: type.name,
         points: [
           for (var i = 0; i <= 20; i++)
@@ -379,6 +381,8 @@ void main() {
       expect(out.first.type, type.name);
       expect(out.first.points.length, 2);
       expect(out.first.geometric, isTrue);
+      expect(out.first.layer, 3);
+      expect(out.first.alpha, 0.35);
     }
   });
 
@@ -404,6 +408,90 @@ void main() {
     expect(clipped.first.points.last.x, 100);
     for (final p in clipped.first.points) {
       expect(p.x >= 0 && p.x <= 100, isTrue);
+    }
+    // 裁切後仍保留圖層、透明度與筆型
+    const hl = Stroke(
+      color: '#000',
+      size: 4,
+      layer: 2,
+      type: 'highlighter',
+      alpha: 0.35,
+      points: [
+        NotePoint(x: -10, y: 50, p: 1, t: 0),
+        NotePoint(x: 110, y: 50, p: 1, t: 1),
+      ],
+    );
+    final hlOut = clipStrokeToRect(hl, r);
+    expect(hlOut.single.layer, 2);
+    expect(hlOut.single.alpha, 0.35);
+    expect(hlOut.single.type, 'highlighter');
+  });
+
+  test('splitStrokeAcrossPages：跨頁切兩筆，頁間空隙丟棄', () {
+    const p0 = Rect.fromLTWH(24, 24, 400, 600);
+    const p1 = Rect.fromLTWH(24, 672, 400, 600);
+    const s = Stroke(
+      color: '#000',
+      size: 4,
+      layer: 2,
+      type: 'highlighter',
+      alpha: 0.35,
+      points: [
+        NotePoint(x: 100, y: 580, p: 1, t: 0),
+        NotePoint(x: 100, y: 750, p: 1, t: 8),
+      ],
+    );
+    final out = splitStrokeAcrossPages(s, const [p0, p1]);
+    expect(out.map((e) => e.page), [0, 1]);
+    // 第 1 頁停在紙底 624；第 2 頁從頁首 24 開始，中間 48px 不保留
+    expect(out[0].points.last.y, closeTo(624, 1e-6));
+    expect(out[1].points.first.y, closeTo(24, 1e-6));
+    for (final piece in out) {
+      expect(piece.layer, 2);
+      expect(piece.alpha, 0.35);
+      for (final p in piece.points) {
+        expect(p.y, inInclusiveRange(24, 624));
+      }
+    }
+  });
+
+  test('splitStrokeAcrossPages：空隙全丟、向上跨頁、單點保留', () {
+    const p0 = Rect.fromLTWH(24, 24, 400, 600);
+    const p1 = Rect.fromLTWH(24, 672, 400, 600);
+    const gap = Stroke(color: '#000', size: 4, points: [
+      NotePoint(x: 100, y: 630, p: 1, t: 0),
+      NotePoint(x: 100, y: 660, p: 1, t: 8),
+    ]);
+    expect(splitStrokeAcrossPages(gap, const [p0, p1]), isEmpty);
+
+    const up = Stroke(color: '#000', size: 4, page: 1, points: [
+      NotePoint(x: 100, y: 100, p: 1, t: 0),
+      NotePoint(x: 100, y: -100, p: 1, t: 8),
+    ]);
+    final upOut = splitStrokeAcrossPages(up, const [p0, p1]);
+    expect(upOut.map((e) => e.page), [0, 1]);
+    expect(upOut[0].points.first.y, closeTo(624, 1e-6));
+    expect(upOut[1].points.last.y, closeTo(24, 1e-6));
+
+    const dot = Stroke(color: '#000', size: 4, points: [
+      NotePoint(x: 100, y: 100, p: 1, t: 0),
+    ]);
+    final dotOut = splitStrokeAcrossPages(dot, const [p0, p1]);
+    expect(dotOut.length, 1);
+    expect(dotOut.single.page, 0);
+    expect(dotOut.single.points.length, 1);
+
+    // 一次快速跳過多頁也逐頁切開
+    const p2 = Rect.fromLTWH(24, 1320, 400, 600);
+    const jump = Stroke(color: '#000', size: 4, points: [
+      NotePoint(x: 100, y: 100, p: 1, t: 0),
+      NotePoint(x: 100, y: 2000, p: 1, t: 8),
+    ]);
+    final jumpOut = splitStrokeAcrossPages(jump, const [p0, p1, p2]);
+    expect(jumpOut.map((e) => e.page), [0, 1, 2]);
+    for (final piece in jumpOut) {
+      expect(piece.points.first.y, inInclusiveRange(24, 624));
+      expect(piece.points.last.y, inInclusiveRange(24, 624));
     }
   });
 

@@ -1189,18 +1189,27 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   void _onStrokeCompleted(Stroke s, int dwellMs) {
+    final sl = s.copyWith(layer: _activeLayer);
+    // 形狀修正（筆刷／虛線／螢光；收筆前停頓滿 1s 才判，快掃不停留的不碰）
+    final snapped = (widget.settings.shapeSnap &&
+            canSnapShape(PenTypeLabel.parse(sl.type)))
+        ? snapShape(sl, dwellMs: dwellMs)
+        : [sl];
+    final didSnap = snapped.length != 1 || !identical(snapped.first, sl);
+    final rawSegments = splitStrokeAcrossPages(sl, _pageRects);
+    // 頁間空隙與紙張外的段落直接丟棄；跨頁則依頁拆成多筆。
+    final out = didSnap
+        ? [
+            for (final piece in snapped)
+              ...splitStrokeAcrossPages(piece, _pageRects),
+          ]
+        : rawSegments;
+    if (out.isEmpty) return;
     // 新筆落在當前使用中的圖層（隱藏中也照畫，畫完自動取消隱藏）
     if (_note.hiddenLayers.contains(_activeLayer)) {
       _note.hiddenLayers.remove(_activeLayer);
     }
-    final sl = s.copyWith(layer: _activeLayer);
-    // 形狀修正（筆刷／虛線／螢光；收筆前停頓滿 1s 才判，快掃不停留的不碰）
-    final out = (widget.settings.shapeSnap &&
-            canSnapShape(PenTypeLabel.parse(sl.type)))
-        ? snapShape(sl, dwellMs: dwellMs)
-        : [sl];
-    final didSnap = out.length != 1 || !identical(out.first, sl);
-    // 畫到空頁上 = 消化掉它後面的空頁額度
+    // 畫到空頁上 = 消化掉它後面的空頁額度（跨頁取最大頁）
     if (_blankExtra > 0) {
       var m = -1;
       for (final s0 in _note.strokes) {
@@ -1209,19 +1218,25 @@ class _EditorPageState extends State<EditorPage> {
       for (final m0 in _note.images) {
         if (m0.page > m) m = m0.page;
       }
-      if (sl.page > m) _blankExtra = max(0, m + _blankExtra - sl.page);
+      var top = m;
+      for (final s0 in out) {
+        if (s0.page > top) top = s0.page;
+      }
+      if (top > m) _blankExtra = max(0, m + _blankExtra - top);
     }
     _checkpoint();
     setState(() => _note.strokes.addAll(out));
-    if (didSnap) {
+    if (didSnap && rawSegments.isNotEmpty) {
       // 再壓一筆「原軌跡版」：第一次 undo 回到修正前的樣子，第二次才消失
       _undoStack.add(_entryWith([
         ..._note.strokes.sublist(0, _note.strokes.length - out.length),
-        sl,
+        ...rawSegments,
       ]));
       if (_undoStack.length > _historyCap) _undoStack.removeAt(0);
     }
-    _canvasKey.currentState?.invalidatePage(sl.page);
+    for (final page in {for (final s0 in out) s0.page}) {
+      _canvasKey.currentState?.invalidatePage(page);
+    }
     _scheduleAutosave();
   }
 

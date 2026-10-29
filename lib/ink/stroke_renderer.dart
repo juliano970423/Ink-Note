@@ -288,6 +288,7 @@ List<Stroke> snapShape(Stroke s, {required int dwellMs}) {
           for (var i = 0; i < poly.length; i++) np(poly[i], 0.9, i * 8),
         ],
         page: s.page,
+        layer: s.layer,
         type: s.type,
         alpha: s.alpha,
         geometric: true,
@@ -505,8 +506,13 @@ List<Stroke> clipStrokeToRect(Stroke s, Rect r) {
             size: s.size,
             points: [p],
             page: s.page,
+            layer: s.layer,
             type: s.type,
-            geometric: s.geometric)
+            alpha: s.alpha,
+            geometric: s.geometric,
+            thinning: s.thinning,
+            streamline: s.streamline,
+            hlw: s.hlw)
       ];
     }
     return [];
@@ -538,12 +544,45 @@ List<Stroke> clipStrokeToRect(Stroke s, Rect r) {
           size: s.size,
           points: run,
           page: s.page,
+          layer: s.layer,
           type: s.type,
+          alpha: s.alpha,
           geometric: s.geometric,
           thinning: s.thinning,
           streamline: s.streamline,
           hlw: s.hlw))
       .toList();
+}
+
+/// 把一筆依頁切開：來源頁座標 → 各頁頁內座標，並裁到紙張範圍。
+/// 頁與頁間空隙、紙張外的段落直接丟棄（放開後不保留空隙墨跡）。
+List<Stroke> splitStrokeAcrossPages(Stroke s, List<Rect> pageRects) {
+  if (pageRects.isEmpty || s.points.isEmpty) return [s];
+  if (s.page < 0 || s.page >= pageRects.length) return [s];
+  final src = pageRects[s.page];
+  final shift = src.top - 24.0;
+  var minY = double.infinity;
+  var maxY = -double.infinity;
+  for (final p in s.points) {
+    final y = p.y + shift;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  final first = pageFromY(minY, pageRects);
+  final last = pageFromY(maxY, pageRects);
+  final out = <Stroke>[];
+  for (var i = first; i <= last; i++) {
+    final r = pageRects[i];
+    final dy = src.top - r.top;
+    final moved = s.copyWith(page: i, points: [
+      for (final p in s.points)
+        NotePoint(x: p.x, y: p.y + dy, p: p.p, t: p.t),
+    ]);
+    out.addAll(
+      clipStrokeToRect(moved, Rect.fromLTWH(24, 24, r.width, r.height)),
+    );
+  }
+  return out;
 }
 
 /// Liang-Barsky 線段裁剪：返回 [t0, t1]，不相交返回 null。
