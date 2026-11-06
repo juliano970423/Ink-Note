@@ -28,11 +28,23 @@ class _HomePageState extends State<HomePage> {
   String? _selectedId;
   bool _loading = true;
   String _query = '';
-  String _filterFolder = ''; // '' = 全部
+  /// 篩選：'' = 最近（全部筆記按時間排）；[_kOther] = 其他（未分類）；
+  /// 其餘為資料夾名。
+  String _filterFolder = '';
   ViewMode _view = ViewMode.normal; // 寬屏全屏/沉浸：收起 rail+列表
   int _railIndex = 0; // 0 筆記 / 1 設置（寬屏右側切換）
   // 寬螢幕編輯器正在編輯的實例：與 _reload 解耦，自動保存不重建編輯器。
   Note? _openNote;
+
+  /// 「其他」（未分類）篩選值。控制字符會被 [Note.sanitizeFolder] 過濾，
+  /// 真實資料夾不可能撞名。
+  static const String _kOther = '\u0001未分類';
+
+  /// 篩選值 → 資料夾真值（[Note.folder]；其他 = 未分類 = ''）。
+  static String _folderOfFilter(String f) => f == _kOther ? '' : f;
+
+  /// 目前篩選底下新筆記要落的資料夾（最近看全部 → 落未分類，之後拖去整理）。
+  String get _createFolder => _filterFolder == _kOther ? '' : _filterFolder;
 
   @override
   void initState() {
@@ -48,7 +60,9 @@ class _HomePageState extends State<HomePage> {
       _notes = notes;
       _folders = folders;
       _loading = false;
-      if (_filterFolder.isNotEmpty && !_folders.contains(_filterFolder)) {
+      if (_filterFolder != _kOther &&
+          _filterFolder.isNotEmpty &&
+          !_folders.contains(_filterFolder)) {
         _filterFolder = '';
       }
       if (_selectedId != null &&
@@ -60,8 +74,11 @@ class _HomePageState extends State<HomePage> {
 
   List<Note> get _filtered {
     Iterable<Note> notes = _notes;
-    if (_filterFolder.isNotEmpty) {
-      notes = notes.where((n) => n.folder == _filterFolder);
+    final f = _filterFolder;
+    if (f != '') {
+      notes = f == _kOther
+          ? notes.where((n) => n.folder.isEmpty)
+          : notes.where((n) => n.folder == f);
     }
     if (_query.isNotEmpty) {
       notes = notes.where(
@@ -115,7 +132,7 @@ class _HomePageState extends State<HomePage> {
       title: '未命名筆記',
       createdAt: now,
       updatedAt: now,
-      folder: _filterFolder,
+      folder: _createFolder,
       pageId: pageId,
     );
     await widget.repo.save(note);
@@ -200,7 +217,7 @@ class _HomePageState extends State<HomePage> {
       title: Note.sanitizeTitle(title),
       createdAt: now,
       updatedAt: now,
-      folder: _filterFolder,
+      folder: _createFolder,
       backgrounds: [
         for (final m in metas)
           PageBg(w: m.w, h: m.h, key: Note.newId(), src: m.src),
@@ -248,11 +265,19 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _moveNote(Note n, String target) async {
+    if (n.folder == target) return;
     final fresh = await widget.repo.load(n.id);
     fresh.folder = Note.sanitizeFolder(target);
     await widget.repo.save(fresh);
     if (_openNote?.id == n.id) _openNote!.folder = fresh.folder;
     await _reload();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                '「${n.title}」已移至 ${target.isEmpty ? '其他' : fresh.folder}')),
+      );
+    }
   }
 
   Future<void> _moveDialog(Note n) async {
@@ -265,7 +290,7 @@ class _HomePageState extends State<HomePage> {
           for (final f in options)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(ctx, f),
-              child: Text(f.isEmpty ? '根目錄（未分類）' : f),
+              child: Text(f.isEmpty ? '其他（未分類）' : f),
             ),
         ],
       ),
@@ -542,7 +567,8 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
         ),
-        // 資料夾篩選列
+        // 分類列：最近（全部筆記按時間排）＋ 其他（未分類）＋ 資料夾；
+        // 資料夾 chip 同時是拖放落點（長按卡片拖來放開即移動）。
         SizedBox(
           height: 44,
           child: ListView(
@@ -552,22 +578,14 @@ class _HomePageState extends State<HomePage> {
               Padding(
                 padding: const EdgeInsets.only(right: 4),
                 child: FilterChip(
-                  label: const Text('全部'),
+                  label: const Text('最近'),
                   selected: _filterFolder.isEmpty,
                   onSelected: (_) =>
                       setState(() => _filterFolder = ''),
                 ),
               ),
-              for (final f in _folders)
-                Padding(
-                  padding: const EdgeInsets.only(right: 4),
-                  child: FilterChip(
-                    label: Text(f),
-                    selected: _filterFolder == f,
-                    onSelected: (_) =>
-                        setState(() => _filterFolder = f),
-                  ),
-                ),
+              _folderChip(label: '其他', value: _kOther),
+              for (final f in _folders) _folderChip(label: f, value: f),
               IconButton(
                 icon: const Icon(Icons.create_new_folder_outlined),
                 tooltip: '新資料夾',
@@ -604,64 +622,133 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// 資料夾/「其他」篩選 chip：同時接住長按拖來的筆記（放開即移動）。
+  Widget _folderChip({required String label, required String value}) {
+    final target = _folderOfFilter(value);
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: DragTarget<Note>(
+        onWillAcceptWithDetails: (details) =>
+            details.data.folder != target,
+        onAcceptWithDetails: (details) => _moveNote(details.data, target),
+        builder: (context, candidates, _) {
+          final hover = candidates.isNotEmpty;
+          return FilterChip(
+            avatar: hover
+                ? const Icon(Icons.drive_file_move_outlined, size: 16)
+                : null,
+            label: Text(label),
+            tooltip: '拖入筆記即移動到此${label == '其他' ? '（未分類）' : ''}',
+            selected: _filterFolder == value,
+            onSelected: (_) => setState(() => _filterFolder = value),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _noteCard(Note n) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: Card(
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => _open(n),
-          child: Row(
-            children: [
-              FutureBuilder<Uint8List?>(
-                future: _thumbBytes(n.id),
-                builder: (ctx, snap) {
-                  final bytes = snap.data;
-                  if (bytes != null && bytes.isNotEmpty) {
-                    return Image.memory(
-                      bytes,
-                      width: 72,
-                      height: 72,
-                      fit: BoxFit.cover,
-                    );
-                  }
-                  return Container(
+      child: LongPressDraggable<Note>(
+        data: n,
+        // 長按 350ms 拾起：輕點照樣開筆記，列表滾動不受干擾；
+        // 拖到分類 chip 上放開即移動（移動到…選單仍保留）。
+        delay: const Duration(milliseconds: 350),
+        feedback: _dragFeedback(n),
+        childWhenDragging:
+            Opacity(opacity: 0.45, child: _noteCardContent(n)),
+        child: _noteCardContent(n),
+      ),
+    );
+  }
+
+  Widget _noteCardContent(Note n) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _open(n),
+        child: Row(
+          children: [
+            FutureBuilder<Uint8List?>(
+              future: _thumbBytes(n.id),
+              builder: (ctx, snap) {
+                final bytes = snap.data;
+                if (bytes != null && bytes.isNotEmpty) {
+                  return Image.memory(
+                    bytes,
                     width: 72,
                     height: 72,
-                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                    child: const Icon(Icons.draw_outlined),
+                    fit: BoxFit.cover,
                   );
-                },
-              ),
-              Expanded(
-                child: ListTile(
-                  title: Text(n.title,
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(
-                    '${n.updatedAt.toLocal().toString().substring(0, 16)} · ${n.strokes.length} 筆'
-                    '${n.folder.isNotEmpty ? ' · ${n.folder}' : ''}',
-                  ),
-                  trailing: PopupMenuButton<String>(
-                    icon: const Icon(Icons.more_vert),
-                    onSelected: (v) async {
-                      if (v == 'move') {
-                        await _moveDialog(n);
-                      } else if (v == 'delete') {
-                        await widget.repo.delete(n.id);
-                        _reload();
-                      }
-                    },
-                    itemBuilder: (_) => const [
-                      PopupMenuItem(
-                          value: 'move', child: Text('移動到…')),
-                      PopupMenuItem(
-                          value: 'delete', child: Text('刪除')),
-                    ],
-                  ),
+                }
+                return Container(
+                  width: 72,
+                  height: 72,
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  child: const Icon(Icons.draw_outlined),
+                );
+              },
+            ),
+            Expanded(
+              child: ListTile(
+                title: Text(n.title,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                  '${n.updatedAt.toLocal().toString().substring(0, 16)} · ${n.strokes.length} 筆'
+                  '${n.folder.isNotEmpty ? ' · ${n.folder}' : ' · 其他'}',
+                ),
+                trailing: PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (v) async {
+                    if (v == 'move') {
+                      await _moveDialog(n);
+                    } else if (v == 'delete') {
+                      await widget.repo.delete(n.id);
+                      _reload();
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                        value: 'move', child: Text('移動到…')),
+                    PopupMenuItem(
+                        value: 'delete', child: Text('刪除')),
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 拖曳跟隨的小浮片（標題 pill）。
+  Widget _dragFeedback(Note n) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      elevation: 8,
+      borderRadius: BorderRadius.circular(10),
+      color: scheme.primaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.draw_outlined,
+                size: 18, color: scheme.onPrimaryContainer),
+            const SizedBox(width: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 180),
+              child: Text(
+                n.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: scheme.onPrimaryContainer, fontSize: 14),
+              ),
+            ),
+          ],
         ),
       ),
     );

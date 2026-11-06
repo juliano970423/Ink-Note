@@ -661,4 +661,66 @@ void main() {
     await _pumpNarrow(tester, store);
     expect(find.widgetWithText(FilterChip, '空資料夾'), findsOneWidget);
   });
+
+  testWidgets('分類列：最近＋其他取代全部，其他＝未分類篩選', (tester) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final store = MemoryNoteStore();
+    await store.save(_seedNote('a1b2', '根筆記', ''));
+    await store.save(_seedNote('c3d4', '工作筆記', '工作'));
+    await _pumpNarrow(tester, store);
+    await tester.pumpAndSettle();
+
+    // 不再有「全部」；「最近」預設選中、全部筆記可見；「其他」=未分類
+    expect(find.text('全部'), findsNothing);
+    expect(find.widgetWithText(FilterChip, '最近'), findsOneWidget);
+    expect(find.widgetWithText(FilterChip, '其他'), findsOneWidget);
+    expect(find.text('根筆記'), findsOneWidget);
+    expect(find.text('工作筆記'), findsOneWidget);
+
+    // 點「其他」：根筆記（未分類）可見，資料夾筆記被篩掉
+    await tester.tap(find.text('其他'));
+    await tester.pump();
+    expect(find.text('根筆記'), findsOneWidget);
+    expect(find.text('工作筆記'), findsNothing);
+
+    // 「其他」不建實體資料夾
+    expect(await store.listFolders(), isNot(contains('其他')));
+  });
+
+  testWidgets('長按卡片拖曳到「其他」chip 放開即移動', (tester) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final store = MemoryNoteStore();
+    await store.save(_seedNote('a1b2', '根筆記', ''));
+    await store.save(_seedNote('c3d4', '工作筆記', '工作'));
+    await store.save(_seedNote('e5f6', '第二工作', '工作'));
+    await _pumpNarrow(tester, store);
+    await tester.pumpAndSettle();
+
+    // 長按 350ms 拾起，拖到「其他」chip 放開
+    final from = tester.getCenter(find.text('工作筆記'));
+    final to = tester.getCenter(find.widgetWithText(FilterChip, '其他'));
+    final g = await tester.startGesture(from);
+    await tester.pump(const Duration(milliseconds: 500));
+    await g.moveBy(to - from);
+    await tester.pump();
+    await g.up();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // 移動＝folder 真值清空（未分類不建實體資料夾）
+    final moved = await store.load('c3d4');
+    expect(moved.folder, isEmpty);
+
+    // 「其他」篩選下看得到：兩則未分類可見，「工作」剩下那則被篩掉
+    // （拖放沒接住時會退回「最近」，這裡就會抓到）
+    await tester.tap(find.text('其他'));
+    await tester.pump();
+    expect(find.text('根筆記'), findsOneWidget);
+    expect(find.text('工作筆記'), findsOneWidget);
+    expect(find.text('第二工作'), findsNothing);
+    expect(await store.listFolders(), isNot(contains('其他')));
+  });
 }
