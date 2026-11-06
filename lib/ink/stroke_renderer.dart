@@ -137,10 +137,80 @@ List<Offset> strokeOutline(
 
 /// 像素橡皮：抹除 [pos] 半徑 [radius] 內的採樣點，被抹除處斷開，
 /// 一筆可能分裂成多筆（單點殘留保留為圓點筆）。全抹則返回空列表。
+/// 幾何筆（直線/圓/矩形修正產物）：控制點稀疏、刪點無效（直線擦了沒反應、
+/// 長段會橫穿擦除範圍），改為每段對擦除圓求交裁切（[_segmentKeepIntervals]），
+/// 圓內段落丟掉、斷口補圓邊交點——直線中段可擦，殘段仍是幾何折線。
+/// 完全沒抹到時原樣返回 [s] 本體。殘段一律保留 layer/alpha（殘段跳層、
+/// 螢光筆變不透明都是漏了這兩欄造成的）。
 List<Stroke> eraseStrokePoints(Stroke s, Offset pos, double radius) {
+  final pts = s.points;
+  if (pts.isEmpty) return <Stroke>[];
+  if (pts.length == 1) {
+    final pt = pts.first;
+    return (Offset(pt.x, pt.y) - pos).distance <= radius
+        ? <Stroke>[]
+        : <Stroke>[s];
+  }
+  if (s.geometric) {
+    final runs = <List<NotePoint>>[];
+    var cur = <NotePoint>[];
+    var touched = false;
+    NotePoint at(NotePoint a, NotePoint b, double t) => NotePoint(
+          x: a.x + (b.x - a.x) * t,
+          y: a.y + (b.y - a.y) * t,
+          p: a.p + (b.p - a.p) * t,
+          t: a.t,
+        );
+    for (var i = 0; i + 1 < pts.length; i++) {
+      final a = pts[i], b = pts[i + 1];
+      final kept = _segmentKeepIntervals(a, b, pos, radius);
+      if (kept.isEmpty) {
+        touched = true;
+        if (cur.isNotEmpty) {
+          runs.add(cur);
+          cur = <NotePoint>[];
+        }
+        continue;
+      }
+      for (var j = 0; j < kept.length; j++) {
+        final (t0, t1) = kept[j];
+        final cut0 = t0 > 1e-6, cut1 = t1 < 1 - 1e-6;
+        if (cut0 || cut1) touched = true;
+        if (j > 0 || cut0) {
+          // 段首被吃掉/前面斷開過：先收斷，從保留段起筆
+          if (cur.isNotEmpty) {
+            runs.add(cur);
+            cur = <NotePoint>[];
+          }
+          cur.add(cut0 ? at(a, b, t0) : a);
+        } else if (cur.isEmpty) {
+          cur.add(a); // 段首完整保留且是新筆
+        }
+        // 段首完整保留且 cur 有點：同一筆續接（cur 尾就是 a），不重複補點
+        cur.add(cut1 ? at(a, b, t1) : b);
+      }
+    }
+    if (cur.isNotEmpty) runs.add(cur);
+    if (!touched) return [s];
+    return [
+      for (final run in runs)
+        Stroke(
+            color: s.color,
+            size: s.size,
+            points: run,
+            page: s.page,
+            layer: s.layer,
+            type: s.type,
+            alpha: s.alpha,
+            geometric: true,
+            thinning: s.thinning,
+            streamline: s.streamline,
+            hlw: s.hlw)
+    ];
+  }
   final runs = <List<NotePoint>>[];
   var cur = <NotePoint>[];
-  for (final pt in s.points) {
+  for (final pt in pts) {
     if ((Offset(pt.x, pt.y) - pos).distance <= radius) {
       if (cur.isNotEmpty) {
         runs.add(cur);
@@ -151,18 +221,53 @@ List<Stroke> eraseStrokePoints(Stroke s, Offset pos, double radius) {
     }
   }
   if (cur.isNotEmpty) runs.add(cur);
-  return runs
-      .map((pts) => Stroke(
-          color: s.color,
-          size: s.size,
-          points: pts,
-          page: s.page,
-          type: s.type,
-          geometric: s.geometric,
-          thinning: s.thinning,
-          streamline: s.streamline,
-          hlw: s.hlw))
-      .toList();
+  if (runs.length == 1 && runs.first.length == pts.length) return [s];
+  return [for (final run in runs) _fragmentOf(s, run)];
+}
+
+/// 殘段重建：保留 layer/alpha（與 [clipStrokeToRect] 同規矩）。
+Stroke _fragmentOf(Stroke s, List<NotePoint> run) => Stroke(
+    color: s.color,
+    size: s.size,
+    points: run,
+    page: s.page,
+    layer: s.layer,
+    type: s.type,
+    alpha: s.alpha,
+    geometric: s.geometric,
+    thinning: s.thinning,
+    streamline: s.streamline,
+    hlw: s.hlw);
+
+/// 線段 [a,b] 與擦除圓（[c] 半徑 [radius]）求交，返回「保留」的參數區間：
+/// 圓內的段落丟掉、斷口補圓邊交點。整段在圓外 → [(0,1)]；
+/// 整段在圓內 → 空；兩端在圓外但段穿圓 → [(0,t1),(t2,1)]；一端在內 →
+/// 交點到圓外那端。
+List<(double, double)> _segmentKeepIntervals(
+    NotePoint a, NotePoint b, Offset c, double radius) {
+  bool inside(NotePoint p) => (Offset(p.x, p.y) - c).distance < radius;
+  final aIn = inside(a), bIn = inside(b);
+  const full = <(double, double)>[(0.0, 1.0)];
+  if (aIn && bIn) return const <(double, double)>[]; // 全段在圓內
+  final dx = b.x - a.x, dy = b.y - a.y;
+  final dd = dx * dx + dy * dy;
+  if (dd <= 1e-12) return aIn ? const <(double, double)>[] : full;
+  // |P(t)-c|² = r² 的二次方程：t² 的 dd、一次項係數 h（=B/2）、常數 k
+  final hx = a.x - c.dx, hy = a.y - c.dy;
+  final h = hx * dx + hy * dy;
+  final k = hx * hx + hy * hy - radius * radius;
+  final disc = h * h - dd * k;
+  if (disc <= 0) return full; // 不相交：整段在圓外（圓內已被上面擋掉）
+  final sq = math.sqrt(disc);
+  if (aIn != bIn) {
+    // 一端在內一端在外：恰一個交點落在段內
+    final t = ((aIn ? -h + sq : -h - sq) / dd).clamp(0.0, 1.0);
+    return aIn ? [(t, 1.0)] : [(0.0, t)];
+  }
+  // 兩端都在圓外：段穿圓時兩根交點都在段內，剪掉中間那截
+  final t1 = (-h - sq) / dd, t2 = (-h + sq) / dd;
+  if (t1 <= 0 || t2 >= 1) return full;
+  return [(0.0, t1), (t2, 1.0)];
 }
 
 /// 把畫布局部座標換算為內容座標並（有紙時）鉗制在紙內，防畫到紙外。

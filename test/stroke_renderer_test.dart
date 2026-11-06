@@ -42,6 +42,131 @@ void main() {
     expect(keep.first.points.length, 2);
   });
 
+  test('像素橡皮：殘段保留 layer 與 alpha（殘段不跳層、螢光不變透明）', () {
+    final s = Stroke(
+      color: '#000',
+      size: 4,
+      points: [for (var i = 0; i < 10; i++) NotePoint(x: 10.0 * i, y: 0, p: 1, t: i)],
+      layer: 2,
+      alpha: 0.35,
+      type: 'highlighter',
+    );
+    final rest = eraseStrokePoints(s, const Offset(45, 0), 6.0);
+    expect(rest.length, 2);
+    for (final frag in rest) {
+      expect(frag.layer, 2);
+      expect(frag.alpha, 0.35);
+      expect(frag.type, 'highlighter');
+    }
+  });
+
+  test('像素橡皮：幾何直線中段可以擦，斷口兩端在圓邊上', () {
+    // 直線修正產物：只有 2 個控制點 (0,0)→(200,200)，geometric=true
+    final line = Stroke(
+      color: '#000',
+      size: 4,
+      points: const [
+        NotePoint(x: 0, y: 0, p: 0.9, t: 0),
+        NotePoint(x: 200, y: 200, p: 0.9, t: 8),
+      ],
+      geometric: true,
+    );
+    final rest = eraseStrokePoints(line, const Offset(100, 100), 20.0);
+    expect(rest.length, 2); // 分裂成兩段
+    for (final frag in rest) {
+      expect(frag.geometric, isTrue);
+      expect(frag.points.length, greaterThanOrEqualTo(2));
+      // 斷口端點距擦除圓心 ≈ 半徑（補交點），整筆不該穿過圓心
+      for (final edge in [frag.points.first, frag.points.last]) {
+        final d = (Offset(edge.x, edge.y) - const Offset(100, 100)).distance;
+        if (frag == rest.first ? edge == frag.points.last : edge == frag.points.first) {
+          expect(d, closeTo(20.0, 1.0));
+        } else {
+          expect(d, greaterThan(20.0));
+        }
+      }
+    }
+    // 兩段都是幾何直線（2 點）→ 向量 PDF 匯出特判不退化
+    expect(rest.first.points.length, 2);
+    expect(rest.last.points.length, 2);
+  });
+
+  test('像素橡皮：幾何直線擦端點 → 剩一段從圓邊起筆', () {
+    final line = Stroke(
+      color: '#000',
+      size: 4,
+      points: const [
+        NotePoint(x: 0, y: 0, p: 0.9, t: 0),
+        NotePoint(x: 200, y: 0, p: 0.9, t: 8),
+      ],
+      geometric: true,
+    );
+    final rest = eraseStrokePoints(line, const Offset(10, 0), 20.0);
+    expect(rest.length, 1);
+    expect(rest.first.points.length, 2);
+    expect(rest.first.points.first.x, closeTo(30.0, 1.0));
+    expect(rest.first.points.last.x, 200.0);
+  });
+
+  test('像素橡皮：幾何直線全抹返回空，未命中返回原筆本體', () {
+    final line = Stroke(
+      color: '#000',
+      size: 4,
+      points: const [
+        NotePoint(x: 0, y: 0, p: 0.9, t: 0),
+        NotePoint(x: 200, y: 0, p: 0.9, t: 8),
+      ],
+      geometric: true,
+    );
+    expect(eraseStrokePoints(line, const Offset(100, 0), 500.0), isEmpty);
+    final keep = eraseStrokePoints(line, const Offset(100, 400), 50.0);
+    expect(keep.length, 1);
+    expect(identical(keep.single, line), isTrue);
+  });
+
+  test('像素橡皮：幾何矩形擦上邊中段，閉環斷成有開口的折線', () {
+    final rect = Stroke(
+      color: '#000',
+      size: 4,
+      points: const [
+        NotePoint(x: 0, y: 0, p: 0.9, t: 0),
+        NotePoint(x: 100, y: 0, p: 0.9, t: 8),
+        NotePoint(x: 100, y: 100, p: 0.9, t: 16),
+        NotePoint(x: 0, y: 100, p: 0.9, t: 24),
+        NotePoint(x: 0, y: 0, p: 0.9, t: 32),
+      ],
+      geometric: true,
+    );
+    final rest = eraseStrokePoints(rect, const Offset(50, 0), 20.0);
+    // 上邊 (0,0)→(100,0) 被 (30,0)-(70,0) 剪開：
+    // 殘段1 = (0,0)→(30,0)；殘段2 = (70,0) 起繞一圈走回收縫 (0,0)
+    expect(rest.length, 2);
+    expect(rest.first.points.length, 2);
+    expect(rest.first.points.first.x, 0.0);
+    expect(rest.first.points.last.x, closeTo(30.0, 1.0));
+    expect(rest.last.points.first.x, closeTo(70.0, 1.0));
+    expect(rest.last.points.last.x, 0.0);
+    expect(rest.last.points.length, 5);
+    // 斷口端點距圓心 ≈ 半徑；所有殘段點都沒有進擦除圓內
+    expect(
+        (Offset(rest.first.points.last.x, rest.first.points.last.y) -
+                const Offset(50, 0))
+            .distance,
+        closeTo(20.0, 1.0));
+    expect(
+        (Offset(rest.last.points.first.x, rest.last.points.first.y) -
+                const Offset(50, 0))
+            .distance,
+        closeTo(20.0, 1.0));
+    for (final frag in rest) {
+      for (final p in frag.points) {
+        expect(
+            (Offset(p.x, p.y) - const Offset(50, 0)).distance,
+            greaterThanOrEqualTo(19.5));
+      }
+    }
+  });
+
   test('toContent：縮放+平移換算，有紙鉗制在紙內', () {
     const page = Rect.fromLTWH(24, 24, 100, 100);
     expect(toContent(const Offset(0, 0), Offset.zero, 1.0, page),

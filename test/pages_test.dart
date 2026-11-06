@@ -511,6 +511,155 @@ void main() {
     expect(loaded.strokes.length, before);
   });
 
+  testWidgets('像素橡皮擦掉末頁全部筆跡：頁數不縮，undo 恢復', (tester) async {
+    final store = MemoryNoteStore();
+    await store.save(_a4note());
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/1 頁'), findsOneWidget);
+
+    // 新增頁：翻到第 2 頁（空白）
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+    expect(find.text('第 2/2 頁'), findsOneWidget);
+
+    // 在末頁落一點
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    expect(loaded.strokes.length, 2);
+    expect(loaded.strokes.last.page, 1);
+
+    // 像素橡皮：主鈕點兩次循環過去
+    await tester.tap(find.byType(StrokeEraserIcon));
+    await tester.pump();
+    await tester.tap(find.byType(StrokeEraserIcon));
+    await tester.pump();
+    expect(find.byType(PixelEraserIcon), findsOneWidget);
+
+    // 同一點抹掉：末頁清空，但頁數不能跟著縮
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    expect(loaded.strokes.length, 1);
+    expect(find.text('第 2/2 頁'), findsOneWidget);
+
+    // undo：點回來，頁數也還在
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    expect(loaded.strokes.length, 2);
+    expect(find.text('第 2/2 頁'), findsOneWidget);
+  });
+
+  testWidgets('空白頁上作畫 → undo：空頁額度隨 undo 回來，頁數不縮', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note()..extraPages = 2;
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/3 頁'), findsOneWidget);
+
+    // 分頁條 chevron 翻到第 3 頁（空白尾頁）
+    await tester.tap(find.byIcon(Icons.chevron_right));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.chevron_right));
+    await tester.pump();
+    expect(find.text('第 3/3 頁'), findsOneWidget);
+
+    // 畫在末頁：消化空頁額度但頁數不變
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    expect(loaded.strokes.length, 2);
+    expect(loaded.strokes.last.page, 2);
+    expect(find.text('第 3/3 頁'), findsOneWidget);
+
+    // undo：筆被撤掉、額度一起回來——修復前這裡會掉回第 1/1 頁
+    await tester.tap(find.byIcon(Icons.undo));
+    await tester.pump();
+    expect(loaded.strokes.length, 1);
+    expect(find.text('第 3/3 頁'), findsOneWidget);
+  });
+
+  testWidgets('圈選跨頁移動：鬆手雙頁結算，兩頁縫裡的段丟掉', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.strokes.clear();
+    note.strokes.add(Stroke(color: '#000000', size: 4.0, points: [
+      for (var i = 0; i < 10; i++)
+        NotePoint(x: 130, y: 300.0 + i * 29.0, p: 1.0, t: i),
+    ]));
+    note.extraPages = 1; // 讓跨頁有落點（第 2 頁空白）
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    final ink = tester.widget<InkCanvas>(find.byType(InkCanvas));
+    expect(ink.pageRects.length, 2);
+    expect(find.text('第 1/2 頁'), findsOneWidget);
+    final topLeft = tester.getTopLeft(find.byType(InkCanvas));
+    Offset screen(Offset stacked) =>
+        topLeft + ink.panOffset + stacked * ink.scale;
+
+    // 圈選（lasso 框住整筆）
+    await tester.tap(find.byType(LassoIcon));
+    await tester.pump();
+    final corners = [
+      screen(const Offset(70, 280)),
+      screen(const Offset(220, 280)),
+      screen(const Offset(220, 585)),
+      screen(const Offset(70, 585)),
+      screen(const Offset(70, 280)),
+    ];
+    final g = await tester.startGesture(corners.first);
+    for (final c in corners.skip(1)) {
+      await g.moveTo(c);
+    }
+    await g.up();
+    await tester.pump();
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
+
+    // 往下拖 800：本来 y300..561 → 1100..1361，騎在兩頁縫上
+    final moveFrom = screen(const Offset(130, 500));
+    await tester.dragFrom(moveFrom, Offset(0, 800 * ink.scale));
+    await tester.pump();
+
+    // 點空白取消選取 → 此時才結算
+    await tester.tapAt(screen(const Offset(680, 200)));
+    await tester.pump();
+
+    // 落到下面那頁的歸下面那頁，縫中間丟掉（A 字案例：腳跟埋尖保留）
+    final on0 = loaded.strokes.where((s) => s.page == 0).toList();
+    final on1 = loaded.strokes.where((s) => s.page == 1).toList();
+    expect(on0.length, 1, reason: '第 1 頁留紙底以上的殘段');
+    expect(on1.length, 1, reason: '跨到第 2 頁的部分不再消失');
+    expect(on0.single.points.length, 3);
+    expect(on1.single.points.length, 7);
+    // 邊緣正好斷在縫上：第 0 頁停在紙底，第 1 頁從紙頂起筆
+    expect(on0.single.points.last.y, closeTo(ink.pageRects[0].bottom, 0.01));
+    expect(on0.single.points.first.y, closeTo(1100.0, 0.01));
+    expect(on1.single.points.first.y, closeTo(24, 0.01));
+    expect(on1.single.points.last.y,
+        closeTo(800.0 + 561.0 - (ink.pageRects[1].top - 24), 0.01));
+    // x 方向不動、不横漂
+    for (final s in [...on0, ...on1]) {
+      for (final p in s.points) {
+        expect(p.x, closeTo(130.0, 0.01));
+      }
+    }
+  });
+
   testWidgets('末頁往下畫：仍鉗制在既有末頁，不自動新增頁', (tester) async {
     tester.view.physicalSize = const Size(1200, 2800);
     tester.view.devicePixelRatio = 1.0;

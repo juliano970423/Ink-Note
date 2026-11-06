@@ -1209,6 +1209,9 @@ class _EditorPageState extends State<EditorPage> {
     if (_note.hiddenLayers.contains(_activeLayer)) {
       _note.hiddenLayers.remove(_activeLayer);
     }
+    // 先快照再消化空頁額度：undo 這一筆時，被吃掉的空頁跟著回來
+    // （快照裡存的是未消化前的 _blankExtra）。
+    _checkpoint();
     // 畫到空頁上 = 消化掉它後面的空頁額度（跨頁取最大頁）
     if (_blankExtra > 0) {
       var m = -1;
@@ -1224,7 +1227,6 @@ class _EditorPageState extends State<EditorPage> {
       }
       if (top > m) _blankExtra = max(0, m + _blankExtra - top);
     }
-    _checkpoint();
     setState(() => _note.strokes.addAll(out));
     if (didSnap && rawSegments.isNotEmpty) {
       // 再壓一筆「原軌跡版」：第一次 undo 回到修正前的樣子，第二次才消失
@@ -1256,6 +1258,10 @@ class _EditorPageState extends State<EditorPage> {
   /// 點按空白（沒刪到）不留 checkpoint。
   bool _eraseSessionActive = false;
 
+  /// 擦除會話開始時的總頁數：擦掉內容後頁數只能「補回」不能縮，
+  /// 否則擦掉最後一頁的筆跡，排在後面的空頁會跟著被清掉。
+  int _eraseStartCount = 0;
+
   void _onStrokeEraseTick(List<Offset> chunk, int page) {
     final hit = <Stroke>{};
     for (final pos in _densePath(chunk, 4)) {
@@ -1272,10 +1278,12 @@ class _EditorPageState extends State<EditorPage> {
     }
     if (hit.isEmpty) return;
     if (!_eraseSessionActive) {
+      _eraseStartCount = _pageCount;
       _checkpoint();
       _eraseSessionActive = true;
     }
     setState(() => _note.strokes.removeWhere((s) => hit.contains(s)));
+    _syncBlankExtra(max(_eraseStartCount, _pageCount));
     _pruneSelection();
     _canvasKey.currentState?.invalidatePage(page);
   }
@@ -1284,6 +1292,7 @@ class _EditorPageState extends State<EditorPage> {
   void _onStrokeEraseEnd() {
     if (!_eraseSessionActive) return;
     _eraseSessionActive = false;
+    _eraseStartCount = 0;
     _reclampPan();
     _scheduleAutosave();
   }
@@ -1316,10 +1325,13 @@ class _EditorPageState extends State<EditorPage> {
     }
     if (!changed) return;
     if (!_eraseSessionActive) {
+      _eraseStartCount = _pageCount;
       _checkpoint();
       _eraseSessionActive = true;
     }
     setState(() => _note.strokes = cur);
+    // 擦掉內容不縮頁：末尾空頁額度補回（擦掉最後一頁筆跡也不掉頁）。
+    _syncBlankExtra(max(_eraseStartCount, _pageCount));
     _pruneSelection();
     _canvasKey.currentState?.invalidatePage(page);
   }
@@ -1328,6 +1340,7 @@ class _EditorPageState extends State<EditorPage> {
   void _onPixelEraseEnd() {
     if (!_eraseSessionActive) return;
     _eraseSessionActive = false;
+    _eraseStartCount = 0;
     _reclampPan();
     _scheduleAutosave();
   }
@@ -1683,14 +1696,16 @@ class _EditorPageState extends State<EditorPage> {
     _scheduleAutosave();
   }
 
-  /// 取消選取結算：有紙/底圖時把選中筆跡出紙的部分裁掉。
-  /// 返回是否有裁掉（調用者在 setState 外補 invalidate＋存檔，
-  /// 或已在 setState 內時由 _deselect 代勞）。
+  /// 取消選取結算：有紙/底圖時把選中筆跡「依頁切開」——移出頁界的部分
+  /// 換頁號落到新頁（與書寫同一規則 splitStrokeAcrossPages），兩頁縫裡
+  /// 與紙張外的段丟棄。之前用 clipStrokeToRect 只裁原頁，跨頁移動的部分
+  /// 會直接消失。返回是否有實質變化（調用者在 setState 外補 invalidate＋
+  /// 存檔，或已在 setState 內時由 _deselect 代勞）。
   /// 與拖移同一個 undo 作用域（這些路徑中間都無 checkpoint）。
   bool _clipDeselected() {
     if (_selected.isEmpty) return false;
     final rect = _clipRectForPage(_selectionPage);
-    if (rect == null) return false;
+    if (rect == null) return false; // 無限畫布不裁紙
     var clippedAny = false;
     final kept = <Stroke>{};
     final next = <Stroke>[];
@@ -1699,13 +1714,14 @@ class _EditorPageState extends State<EditorPage> {
         next.add(s);
         continue;
       }
-      final clipped = clipStrokeToRect(s, rect);
-      if (clipped.length != 1 ||
-          clipped.first.points.length != s.points.length) {
-        clippedAny = true;
-      }
-      next.addAll(clipped);
-      kept.addAll(clipped);
+      final split = splitStrokeAcrossPages(s, _pageRects);
+      final changed = split.isEmpty ||
+          split.length != 1 ||
+          split.first.page != s.page ||
+          split.first.points.length != s.points.length;
+      if (changed) clippedAny = true;
+      next.addAll(split);
+      kept.addAll(split);
     }
     if (clippedAny) {
       _note.strokes = next;
@@ -1728,6 +1744,8 @@ class _EditorPageState extends State<EditorPage> {
 
   void _deleteSelection() {
     if (_selected.isEmpty && _selectedImageIds.isEmpty) return;
+    // 刪除不縮頁：先記頁數，刪完補回末尾空頁額度
+    final startCount = _pageCount;
     _checkpoint();
     final page = _selectionPage;
     final imgIds = Set<String>.from(_selectedImageIds);
@@ -1739,6 +1757,7 @@ class _EditorPageState extends State<EditorPage> {
       _note.images.removeWhere((m) => imgIds.contains(m.id));
       _clearSelection();
     });
+    _syncBlankExtra(startCount);
     _canvasKey.currentState?.setNoteImages(Map<String, ui.Image>.from(_noteImgs));
     _canvasKey.currentState?.invalidatePage(page);
     _scheduleAutosave();
