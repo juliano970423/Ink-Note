@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:pdf_document/pdf_document.dart';
 
+import '../models/note.dart';
+import '../storage/note_store.dart';
 import 'pdf_vector.dart';
 
 /// PDF 一页的渲染结果（PNG 字节 + 像素尺寸）。
@@ -97,4 +99,40 @@ int? bgUpgradeWidth(
     if (s >= required) return s > maxWidth ? maxWidth : s;
   }
   return decoded < maxWidth ? maxWidth : null;
+}
+
+/// 由 PDF bytes 建底圖筆記並落盤（原檔 + 第一頁底圖）。
+/// 站內匯入（檔案挑選器）與分享接收共用：這步不開編輯器、不彈窗，
+/// 由調用者決定去處（站內直接開編輯器，分享只刷新列表並提示）。
+/// 解析失敗/沒有合法頁面時拋出，調用者統一彈「打不開」提示。
+Future<Note> createPdfNote(
+  NoteStore repo,
+  Uint8List pdfBytes,
+  String fileName, {
+  String folder = '',
+}) async {
+  final metas = pageBoxMetas(pdfBytes);
+  if (metas.isEmpty) throw StateError('no pages');
+  final first = await renderPdfPages(pdfBytes, maxPages: 1);
+  final now = DateTime.now().toUtc();
+  var title = fileName.replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
+  if (title.trim().isEmpty) title = '未命名筆記';
+  final note = Note(
+    id: Note.newId(),
+    title: Note.sanitizeTitle(title),
+    createdAt: now,
+    updatedAt: now,
+    folder: Note.sanitizeFolder(folder),
+    backgrounds: [
+      for (final m in metas) PageBg(w: m.w, h: m.h, key: Note.newId(), src: m.src),
+    ],
+  );
+  await repo.save(note);
+  await repo.saveOriginalPdf(note.id, pdfBytes);
+  // 第一頁有像素就存；沒有也開（編輯器後台會補）
+  if (first.isNotEmpty) {
+    await repo.saveBackground(
+        note.id, note.backgrounds.first.key, first.first.png);
+  }
+  return note;
 }

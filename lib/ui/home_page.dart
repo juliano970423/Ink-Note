@@ -1,14 +1,39 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../import/pdf_import.dart';
+import '../import/share_common.dart';
+import '../import/share_receive.dart'
+    if (dart.library.html) '../import/share_receive_stub.dart';
 import '../models/note.dart';
 import '../settings/app_settings.dart';
 import '../storage/note_store.dart';
 import 'editor_page.dart';
 import 'settings_page.dart';
+
+/// 分享進來的 PDF 落地：建筆記 → 刷新列表 → 提示文案（回列表、不開編輯器）。
+/// 成功返回筆記標題；失敗返回空串（已提示「PDF 打不開」），不拋出——
+/// 接收端只是讓用戶看到結果。頂層函數，測試直接調用。
+Future<String> ingestSharedPdf({
+  required NoteStore repo,
+  required Uint8List bytes,
+  required String fileName,
+  required void Function(String message) notify,
+  required Future<void> Function() reload,
+}) async {
+  try {
+    final note = await createPdfNote(repo, bytes, fileName);
+    await reload();
+    notify('已導入「${note.title}」');
+    return note.title;
+  } catch (e) {
+    notify('PDF 打不開：$e');
+    return '';
+  }
+}
 
 /// 筆記列表頁：標題 + updatedAt + 縮圖預覽。點列表頭「新筆記」新建（可選頁面尺寸）。
 /// 寬螢幕（>900px）列表-編輯雙欄佈局；側欄可折疊；全屏/沉浸時收起左側。
@@ -35,6 +60,8 @@ class _HomePageState extends State<HomePage> {
   int _railIndex = 0; // 0 筆記 / 1 設置（寬屏右側切換）
   // 寬螢幕編輯器正在編輯的實例：與 _reload 解耦，自動保存不重建編輯器。
   Note? _openNote;
+  // 系統分享/打開方式投遞的 PDF（Android/iOS；桌面/Web 空流）。
+  StreamSubscription<SharedPdf>? _shareSub;
 
   /// 「其他」（未分類）篩選值。控制字符會被 [Note.sanitizeFolder] 過濾，
   /// 真實資料夾不可能撞名。
@@ -50,6 +77,32 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _reload();
+    _shareSub = PdfShareReceiver().receive().listen(_takeSharedPdf);
+  }
+
+  @override
+  void dispose() {
+    _shareSub?.cancel();
+    super.dispose();
+  }
+
+  /// 分享面板/「打開方式」遞進來的 PDF → 回列表（不開編輯器）＋提示。
+  void _takeSharedPdf(SharedPdf p) {
+    unawaited(ingestSharedPdf(
+      repo: widget.repo,
+      bytes: p.bytes,
+      fileName: p.fileName,
+      notify: _toast,
+      reload: _reload,
+    ));
+  }
+
+  /// 提示統一走根 messenger：正被壓在編輯器底下也照樣浮出來。
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _reload() async {
@@ -164,7 +217,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// 匯入 PDF：選檔 → 逐頁渲染底圖 → 建底圖筆記。
+  /// 匯入 PDF：選檔 → 建底圖筆記 → 直接打開編輯器（其餘頁面後台載入）。
+  /// 分享接收共用 [createPdfNote]（不開編輯器版在 [ingestSharedPdf]）。
   Future<void> _importPdf() async {
     final file = await FilePicker.pickFile(
       type: FileType.custom,
@@ -190,49 +244,19 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
-    List<({int w, int h, int src})> metas;
-    List<RenderedPdfPage> first;
     try {
-      // 盒子元数据极快：先建全部页条目，秒开编辑器
-      metas = pageBoxMetas(bytes);
-      if (metas.isEmpty) throw StateError('no pages');
-      // 只渲第一页（首屏），其余编辑器打开后后台填
-      first = await renderPdfPages(bytes, maxPages: 1);
+      final note =
+          await createPdfNote(widget.repo, bytes, file.name, folder: _createFolder);
+      if (!mounted) return;
+      Navigator.pop(context);
+      await _openNewNote(note);
     } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('PDF 打不開：$e')),
-        );
-      }
-      return;
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('PDF 打不開：$e')),
+      );
     }
-    if (!mounted) return;
-    final now = DateTime.now().toUtc();
-    var title = file.name.replaceAll(
-        RegExp(r'\.pdf$', caseSensitive: false), '');
-    if (title.trim().isEmpty) title = '未命名筆記';
-    final note = Note(
-      id: Note.newId(),
-      title: Note.sanitizeTitle(title),
-      createdAt: now,
-      updatedAt: now,
-      folder: _createFolder,
-      backgrounds: [
-        for (final m in metas)
-          PageBg(w: m.w, h: m.h, key: Note.newId(), src: m.src),
-      ],
-    );
-    await widget.repo.save(note);
-    await widget.repo.saveOriginalPdf(note.id, bytes);
-    // 第一页有像素就存；没有也开（编辑器后台会填）
-    if (first.isNotEmpty) {
-      await widget.repo.saveBackground(
-          note.id, note.backgrounds.first.key, first.first.png);
-    }
-    if (!mounted) return;
-    Navigator.pop(context);
-    await _openNewNote(note);
   }
 
   Future<void> _open(Note note) async {
