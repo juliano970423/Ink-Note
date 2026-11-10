@@ -54,8 +54,9 @@ jobs:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
-  # iOS：macos-14 保證可編譯（flutter build ios 預設即 release）。
-  # 不需要簽名證書/描述檔（--no-codesign），產物上傳為 artifact 供檢查。
+  # iOS：macos-15（macos-14 已於 2026-11 被 GitHub Actions 下架）。
+  # flutter build ios 預設即 release；不需要簽名證書/描述檔（--no-codesign），
+  # 產物上傳為 artifact 供檢查。
   # 注意：未簽名的 .app/IPA 裝不上真機（只能跑模擬器）。
   # 真機安裝二選一：
   #   (a) 免費 Apple ID：本地用 Sideloadly/AltStore 重簽下面的
@@ -63,7 +64,7 @@ jobs:
   #   (b) 付費開發者帳號：把 P12＋provisioning profile 存成 Secrets，
   #       CI 改走簽名後 flutter build ipa＋TestFlight。
   build-ios:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
