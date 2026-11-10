@@ -20,5 +20,8 @@
   <string>????</string>
   <key>CFBundleVersion</key>
   <string>1.0</string>
+  <!-- Xcode 26 最低部署目標 15.0（CI 上 Flutter 會自動改寫，這裡預先烘焙避免產生 diff） -->
+  <key>MinimumOSVersion</key>
+  <string>15.0</string>
 </dict>
 </plist>
