@@ -19,10 +19,12 @@ final class ShareRelay: NSObject {
   private var dartReady = false
 
   /// engine 就緒後由 AppDelegate 呼叫：註冊 takePending 的 handler。
-  func attach(applicationRegistrar registrar: NSObject & FlutterApplicationRegistrar) {
+  /// 用 bridge 本身接參，避開 applicationRegistrar 在不同 SDK 下
+  /// 裸協定/nsObject 複合型別的橋接差異。
+  func attach(implicitEngineBridge bridge: FlutterImplicitEngineBridge) {
     let channel = FlutterMethodChannel(
       name: "ink_notes/share_receiver",
-      binaryMessenger: registrar.messenger()
+      binaryMessenger: bridge.applicationRegistrar.messenger()
     )
     channel.setMethodCallHandler { [weak self] call, result in
       switch call.method {

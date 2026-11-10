@@ -13,7 +13,7 @@ import UIKit
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     // file:// PDF 接收橋（LiveContainer 轉發 / 檔案 App「打開方式」）→ Dart。
-    ShareRelay.shared.attach(applicationRegistrar: engineBridge.applicationRegistrar)
+    ShareRelay.shared.attach(implicitEngineBridge: engineBridge)
   }
 
   // 兜底：scene manifest 未生效時系統走 AppDelegate 這條（scene 生效時
