@@ -679,7 +679,16 @@ class _HomePageState extends State<HomePage> {
         // 長按 350ms 拾起：輕點照樣開筆記，列表滾動不受干擾；
         // 拖到分類 chip 上放開即移動（移動到…選單仍保留）。
         delay: const Duration(milliseconds: 350),
-        feedback: _dragFeedback(n),
+        // 錨點改指針：預設 childDragAnchorStrategy 會拿「卡片上按住的點」
+        // 當 feedback 錨，pill 比卡片小得多時整片固定飄在手指左上
+        //（像位置算錯）。改 pointerDragAnchorStrategy（feedback 左上角在
+        // 指針）＋左移半寬、上移 1.2 倍高 → pill 懸在指尖上方不被蓋住。
+        // 落點判定走指針位置，與 feedback 畫在哪無關。
+        feedback: FractionalTranslation(
+          translation: const Offset(-0.5, -1.2),
+          child: _dragFeedback(n),
+        ),
+        dragAnchorStrategy: pointerDragAnchorStrategy,
         childWhenDragging:
             Opacity(opacity: 0.45, child: _noteCardContent(n)),
         child: _noteCardContent(n),
