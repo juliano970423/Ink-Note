@@ -48,8 +48,6 @@ class InkCanvas extends StatefulWidget {
   final void Function(double factor, Offset focal) onZoomUpdate;
   /// 縮放手勢結束（雙指抬起/觸控板捏合停手）：編輯器按需提底圖清晰度。
   final VoidCallback? onZoomEnd;
-  /// 雙指縱向快掃翻頁（+1 下一頁 / -1 上一頁），慢速雙指仍是平移。
-  final void Function(int dir) onPageFlick;
   /// 雙指點按：兩根手指連點兩下 → undo，三下 → redo。
   /// 輕觸（位移 <14px、按下到雙指都抬起 <400ms）才算點按，移動/久按不觸發。
   final VoidCallback onTwoFingerDoubleTap;
@@ -126,7 +124,6 @@ class InkCanvas extends StatefulWidget {
     required this.onPanUpdate,
     required this.onZoomUpdate,
     this.onZoomEnd,
-    required this.onPageFlick,
     required this.onTwoFingerDoubleTap,
     required this.onTwoFingerTripleTap,
     this.readOnly = false,
@@ -176,8 +173,6 @@ class InkCanvasState extends State<InkCanvas> {
   bool _twoFinger = false;
   bool _blockUntilLift = false;
   Offset? _rightPanLast;
-  Offset? _twoStartMid;
-  Duration? _twoStartTime;
   // 單指平移（唯讀模式 / 防誤觸下的觸屏）
   Offset? _singlePanLast;
   // 單指平移落筆點：抬起位移 <6px 算 tap，點空白全清選取（跟筆點空一致）。
@@ -330,8 +325,12 @@ class InkCanvasState extends State<InkCanvas> {
   }
 
   /// 只重建指定頁（落筆、拖移、橡皮、圖片變更走這條）。
+  /// 觀測用：測試先 clear 再觸發，驗證哪些頁被標髒（跨頁結算回歸測試用）。
+  final List<int> debugInvalidatedPages = [];
+
   void invalidatePage(int page) {
     if (!_validPage(page)) return;
+    debugInvalidatedPages.add(page);
     _dirtyPages.add(page);
     _scheduleCompletedRebuild();
   }
@@ -432,6 +431,9 @@ class InkCanvasState extends State<InkCanvas> {
 
   /// 對外清圖片選中（操作條取消鈕用；up 路徑點空白已自行處理）。
   void deselectImage() => _selectImage(null);
+
+  /// 觀測用：tap 單選的圖片 id（per-image 虛線框條件；雙框回歸測試用）。
+  String? get debugSelectedImageId => _selectedImageId;
 
   /// 上層指定圖片選中（插入圖片用：清舊選取只選新圖；不回調，
   /// 只同步本地手柄狀態，上層 ids 由調用方 setState）。
@@ -865,8 +867,6 @@ class InkCanvasState extends State<InkCanvas> {
     if (_gestureCount() >= 2) {
       if (_isPalmIntrusion(e)) return;
       _twoFinger = true;
-      _twoStartMid = _midpoint();
-      _twoStartTime = e.timeStamp;
       _live = null;
       _lassoPath = [];
       _movingSel = false;
@@ -1397,42 +1397,8 @@ class InkCanvasState extends State<InkCanvas> {
     });
   }
 
-  Offset? _midpoint() {
-    final fingers = _active.entries
-        .where((en) =>
-            _kinds[en.key] != null && _triggersGesture(_kinds[en.key]!))
-        .toList();
-    if (fingers.length < 2) return null;
-    var x = 0.0, y = 0.0;
-    for (final p in fingers) {
-      x += p.value.dx;
-      y += p.value.dy;
-    }
-    return Offset(x / fingers.length, y / fingers.length);
-  }
-
-  int _gestureActiveCount() {
-    var n = 0;
-    for (final id in _active.keys) {
-      final k = _kinds[id];
-      if (k != null && _triggersGesture(k)) n++;
-    }
-    return n;
-  }
-
   void _onUp(PointerUpEvent e) {
     final known = _active.containsKey(e.pointer);
-    // 雙指釋放：夠快夠直的縱向快掃視為翻頁
-    if (_twoFinger && _gestureActiveCount() <= 2) {
-      final mid = _midpoint();
-      final t0 = _twoStartTime;
-      final m0 = _twoStartMid;
-      if (mid != null && m0 != null && t0 != null) {
-        final dt = (e.timeStamp - t0).inMicroseconds / 1e6;
-        final dir = flickDir(mid - m0, dt);
-        if (dir != 0) widget.onPageFlick(dir);
-      }
-    }
     _untrack(e.pointer);
     // 雙指點按結算：兩指都抬起、沒漂移、夠快 → 記一次；還剩手指就繼續等
     if (_twoTapDownTime != null && _touchCount() == 0) {
@@ -1450,8 +1416,6 @@ class InkCanvasState extends State<InkCanvas> {
     if (_twoFinger) {
       if (_active.length < 2) {
         _twoFinger = false;
-        _twoStartMid = null;
-        _twoStartTime = null;
         // 剩餘手指抬起前不再書寫，避免甩出 stray 筆畫
         if (_active.isNotEmpty) _blockUntilLift = true;
         widget.onZoomEnd?.call();
@@ -1815,7 +1779,6 @@ class InkCanvasState extends State<InkCanvas> {
             scaleHandle: _scaleHandle(),
             images: widget.images,
             selectedImageId: _selectedImageId,
-            selectedImageIds: widget.selectedImageIds,
           ),
           size: Size.infinite,
         ),
@@ -1902,9 +1865,9 @@ class _InkPainter extends CustomPainter {
   final Offset? scaleHandle;
   /// 貼圖 meta（選中框定位用；圖本身已烘進 completed）。
   final List<NoteImage> images;
-  /// 已選中圖片 id（單選拖動用，虛線框＋右下縮放手柄）與圈選集合（只畫框）。
+  /// tap 單選的圖片 id（per-image 虛線框＋右下縮放手柄歸它）；
+  /// 圈選多選不畫這層框（統一選取框負責）。
   final String? selectedImageId;
-  final Set<String> selectedImageIds;
 
   _InkPainter({
     this.bg,
@@ -1939,7 +1902,6 @@ class _InkPainter extends CustomPainter {
     required this.scaleHandle,
     required this.images,
     required this.selectedImageId,
-    required this.selectedImageIds,
   });
 
   /// 頁內座標平移到堆疊座標。
@@ -2162,8 +2124,9 @@ class _InkPainter extends CustomPainter {
       canvas.save();
       if (imagePreview) _applyPreviewTransform(canvas);
       for (final m in images) {
-        final isSel =
-            m.id == selectedImageId || selectedImageIds.contains(m.id);
+        // per-image 虛線框只歸 tap 單選（它才帶右下縮放手柄）；
+        // 圈選多選吃統一選取框 selectionRect——兩邊都畫就是雙框。
+        final isSel = m.id == selectedImageId;
         if (!isSel) continue;
         final o = _shift(Offset.zero, m.page);
         final box = Rect.fromLTWH(o.dx + m.x, o.dy + m.y, m.w, m.h);

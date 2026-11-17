@@ -336,7 +336,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () => zoomEnd++,
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -357,6 +356,68 @@ void main() {
     await g2.up();
     await tester.pump();
     expect(zoomEnd, 1);
+  });
+
+  testWidgets('圈選圖片不吃 per-image 虛線框；tap 單選才吃（雙框回歸）',
+      (tester) async {
+    String? tapped;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: InkCanvas(
+          strokes: const [],
+          params: StrokeParams(
+              maxSpeed: 1800,
+              emaWeight: 0.6,
+              thinning: 0.6,
+              streamline: 0.5,
+              size: 4.0),
+          color: '#000000',
+          size: 4.0,
+          penType: PenType.brush,
+          tool: ToolMode.lasso,
+          palmRejection: false,
+          images: const [
+            NoteImage(id: 'i1', page: 0, x: 100, y: 100, w: 200, h: 150),
+          ],
+          // 圈選結果：上層多選集合在場、統一選取框負責畫框；
+          // per-image 虛線框條件只認 tap 單選（修前圈選圖也畫，雙框）。
+          selectedImageIds: const {'i1'},
+          onStrokeCompleted: (_, _) {},
+          onStrokeEraseTick: (_, _) {},
+          onStrokeEraseEnd: () {},
+          onPixelEraseTick: (_, _) {},
+          onPixelEraseEnd: () {},
+          onImageSelected: (id) => tapped = id,
+          onImageDragStart: () {},
+          onImageChanged: (_, _, _, _, _) {},
+          onImageDragEnd: () {},
+          panOffset: Offset.zero,
+          scale: 1.0,
+          onPanUpdate: (_) {},
+          onZoomUpdate: (_, _) {},
+          onZoomEnd: () {},
+          onTwoFingerDoubleTap: () {},
+          onTwoFingerTripleTap: () {},
+          onLassoCompleted: (_, _) {},
+          onSelectionMove: (_) {},
+          onSelectionRotate: (_, _) {},
+          onDeselect: () {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final st = tester.state<InkCanvasState>(find.byType(InkCanvas));
+    // 畫布本地下沒有 tap 單選 → per-image 框不該畫（只有上層圈選集合）
+    expect(st.debugSelectedImageId, isNull);
+    expect(tapped, isNull);
+
+    // tap 圖片 → 提升為 tap 單選：per-image 虛線框＋縮放手柄歸它
+    final g = await tester.startGesture(const Offset(200, 175),
+        kind: ui.PointerDeviceKind.mouse);
+    await g.up();
+    await tester.pump();
+    expect(tapped, 'i1');
+    expect(st.debugSelectedImageId, 'i1');
   });
 
   test('vector image path: 内嵌图行序正确（上红下蓝）', () async {
@@ -455,7 +516,6 @@ void main() {
             zoomed++;
           },
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -513,7 +573,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -585,7 +644,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -643,7 +701,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {
             undo++;
           },
@@ -703,7 +760,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {
             undo++;
           },
@@ -789,7 +845,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -855,7 +910,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -964,7 +1018,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -1032,7 +1085,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -1123,7 +1175,6 @@ void main() {
               onPanUpdate: (_) {},
               onZoomUpdate: (_, _) {},
               onZoomEnd: () {},
-              onPageFlick: (_) {},
               onTwoFingerDoubleTap: () {},
               onTwoFingerTripleTap: () {},
               onLassoCompleted: (_, _) {},
@@ -1208,7 +1259,6 @@ void main() {
               onPanUpdate: (_) {},
               onZoomUpdate: (_, _) {},
               onZoomEnd: () {},
-              onPageFlick: (_) {},
               onTwoFingerDoubleTap: () {},
               onTwoFingerTripleTap: () {},
               onLassoCompleted: (_, _) {},
@@ -1295,7 +1345,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {
@@ -1364,7 +1413,6 @@ void main() {
           },
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {
@@ -1431,7 +1479,6 @@ void main() {
           },
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {
@@ -1518,7 +1565,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -1578,7 +1624,6 @@ void main() {
           onPanUpdate: (_) {},
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},
@@ -1641,7 +1686,6 @@ void main() {
           },
           onZoomUpdate: (_, _) {},
           onZoomEnd: () {},
-          onPageFlick: (_) {},
           onTwoFingerDoubleTap: () {},
           onTwoFingerTripleTap: () {},
           onLassoCompleted: (_, _) {},

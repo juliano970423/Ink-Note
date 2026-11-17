@@ -135,19 +135,33 @@ List<Offset> strokeOutline(
   return outline.map((e) => Offset(e.dx, e.dy)).toList();
 }
 
-/// 像素橡皮：抹除 [pos] 半徑 [radius] 內的採樣點，被抹除處斷開，
+/// 該筆墨跡的半寬（中心線到墨邊的距離）：幾何筆/虛線是描邊寬=size、
+/// 一般筆走 perfect_freehand 輪廓、半徑上限=size/2（滿壓）；
+/// 螢光筆是描邊寬=size×hlw。像素橡皮把它加進擦除半徑，
+/// 讓視覺圓圈與實擦範圍一致（圓蓋到墨邊就一定擦得掉）。
+double _inkHalfWidth(Stroke s) {
+  if (PenTypeLabel.parse(s.type) == PenType.highlighter) {
+    return s.size * (s.hlw ?? 3.0) / 2;
+  }
+  return s.size / 2;
+}
+
+/// 像素橡皮：抹除視覺圓（[pos] 半徑 [radius]）蓋到的墨跡，被抹除處斷開，
 /// 一筆可能分裂成多筆（單點殘留保留為圓點筆）。全抹則返回空列表。
+/// 實擦半徑 = [radius] ＋ 該筆墨跡半寬（[_inkHalfWidth]）：只刪中心線採樣點時，
+/// 墨跡比中心線寬出半個筆粗，粗筆畫會出現「圓圈蓋到墨邊卻擦不掉」的環帶。
 /// 幾何筆（直線/圓/矩形修正產物）：控制點稀疏、刪點無效（直線擦了沒反應、
 /// 長段會橫穿擦除範圍），改為每段對擦除圓求交裁切（[_segmentKeepIntervals]），
 /// 圓內段落丟掉、斷口補圓邊交點——直線中段可擦，殘段仍是幾何折線。
 /// 完全沒抹到時原樣返回 [s] 本體。殘段一律保留 layer/alpha（殘段跳層、
 /// 螢光筆變不透明都是漏了這兩欄造成的）。
 List<Stroke> eraseStrokePoints(Stroke s, Offset pos, double radius) {
+  final eff = radius + _inkHalfWidth(s);
   final pts = s.points;
   if (pts.isEmpty) return <Stroke>[];
   if (pts.length == 1) {
     final pt = pts.first;
-    return (Offset(pt.x, pt.y) - pos).distance <= radius
+    return (Offset(pt.x, pt.y) - pos).distance <= eff
         ? <Stroke>[]
         : <Stroke>[s];
   }
@@ -163,7 +177,7 @@ List<Stroke> eraseStrokePoints(Stroke s, Offset pos, double radius) {
         );
     for (var i = 0; i + 1 < pts.length; i++) {
       final a = pts[i], b = pts[i + 1];
-      final kept = _segmentKeepIntervals(a, b, pos, radius);
+      final kept = _segmentKeepIntervals(a, b, pos, eff);
       if (kept.isEmpty) {
         touched = true;
         if (cur.isNotEmpty) {
@@ -211,7 +225,7 @@ List<Stroke> eraseStrokePoints(Stroke s, Offset pos, double radius) {
   final runs = <List<NotePoint>>[];
   var cur = <NotePoint>[];
   for (final pt in pts) {
-    if ((Offset(pt.x, pt.y) - pos).distance <= radius) {
+    if ((Offset(pt.x, pt.y) - pos).distance <= eff) {
       if (cur.isNotEmpty) {
         runs.add(cur);
         cur = <NotePoint>[];
@@ -713,15 +727,6 @@ List<double>? _liangBarsky(Offset a, Offset b, Rect r) {
   if (!clip(dy, r.bottom - a.dy)) return null;
   if (t0 > t1) return null;
   return [t0, t1];
-}
-
-/// 雙指快掃翻頁判定：0.5s 內縱向速度 >800px/s 且縱向主導。
-/// 返回 +1 下一頁 / -1 上一頁 / 0 不翻。
-int flickDir(Offset delta, double dtSeconds) {
-  if (dtSeconds <= 0 || dtSeconds >= 0.5) return 0;
-  if (delta.dy.abs() <= 800 * dtSeconds) return 0;
-  if (delta.dy.abs() <= 1.5 * delta.dx.abs()) return 0;
-  return delta.dy < 0 ? 1 : -1;
 }
 
 /// 圈選命中圖片：任一角在圈內，或任一套索點在圖內，或邊相交。

@@ -42,6 +42,30 @@ void main() {
     expect(keep.first.points.length, 2);
   });
 
+  test('像素橡皮：有效半徑含墨跡半寬——圓圈蓋到墨邊就擦得掉', () {
+    // size 8 → 墨跡半寬 4。圓心距中心線 15：在視覺半徑 12 之外、
+    // 有效半徑 12+4=16 之內 → 修前圓圈蓋到墨邊卻擦不掉（像裝飾）。
+    final s = Stroke(color: '#000', size: 8, points: [
+      for (var i = 0; i < 10; i++)
+        NotePoint(x: i * 10.0, y: 0, p: 1, t: i),
+    ]);
+    final rest = eraseStrokePoints(s, const Offset(45, 15), 12.0);
+    expect(rest.length, 2);
+    // 螢光筆 size 4、hlw 3 → 墨跡半寬 4×3/2=6。圓心距中心線 10：在
+    // 視覺半徑 6 之外、有效半徑 6+6=12 之內 → 擦得掉。
+    final hl = Stroke(
+      color: '#000',
+      size: 4,
+      type: 'highlighter',
+      points: [
+        for (var i = 0; i < 10; i++)
+          NotePoint(x: i * 10.0, y: 0, p: 1, t: i),
+      ],
+    );
+    final hlRest = eraseStrokePoints(hl, const Offset(45, 10), 6.0);
+    expect(hlRest.length, 2);
+  });
+
   test('像素橡皮：殘段保留 layer 與 alpha（殘段不跳層、螢光不變透明）', () {
     final s = Stroke(
       color: '#000',
@@ -76,13 +100,14 @@ void main() {
     for (final frag in rest) {
       expect(frag.geometric, isTrue);
       expect(frag.points.length, greaterThanOrEqualTo(2));
-      // 斷口端點距擦除圓心 ≈ 半徑（補交點），整筆不該穿過圓心
+      // 斷口端點距擦除圓心 ≈ 有效半徑（20 + 墨跡半寬 2 = 22，補交點），
+      // 整筆不該穿過圓心
       for (final edge in [frag.points.first, frag.points.last]) {
         final d = (Offset(edge.x, edge.y) - const Offset(100, 100)).distance;
         if (frag == rest.first ? edge == frag.points.last : edge == frag.points.first) {
-          expect(d, closeTo(20.0, 1.0));
+          expect(d, closeTo(22.0, 1.0));
         } else {
-          expect(d, greaterThan(20.0));
+          expect(d, greaterThan(22.0));
         }
       }
     }
@@ -104,7 +129,8 @@ void main() {
     final rest = eraseStrokePoints(line, const Offset(10, 0), 20.0);
     expect(rest.length, 1);
     expect(rest.first.points.length, 2);
-    expect(rest.first.points.first.x, closeTo(30.0, 1.0));
+    // 起筆在有效半徑邊上：10 + 20 + 墨跡半寬 2 = 32
+    expect(rest.first.points.first.x, closeTo(32.0, 1.0));
     expect(rest.first.points.last.x, 200.0);
   });
 
@@ -138,31 +164,31 @@ void main() {
       geometric: true,
     );
     final rest = eraseStrokePoints(rect, const Offset(50, 0), 20.0);
-    // 上邊 (0,0)→(100,0) 被 (30,0)-(70,0) 剪開：
-    // 殘段1 = (0,0)→(30,0)；殘段2 = (70,0) 起繞一圈走回收縫 (0,0)
+    // 上邊 (0,0)→(100,0) 被 (28,0)-(72,0) 剪開（有效半徑 22）：
+    // 殘段1 = (0,0)→(28,0)；殘段2 = (72,0) 起繞一圈走回收縫 (0,0)
     expect(rest.length, 2);
     expect(rest.first.points.length, 2);
     expect(rest.first.points.first.x, 0.0);
-    expect(rest.first.points.last.x, closeTo(30.0, 1.0));
-    expect(rest.last.points.first.x, closeTo(70.0, 1.0));
+    expect(rest.first.points.last.x, closeTo(28.0, 1.0));
+    expect(rest.last.points.first.x, closeTo(72.0, 1.0));
     expect(rest.last.points.last.x, 0.0);
     expect(rest.last.points.length, 5);
-    // 斷口端點距圓心 ≈ 半徑；所有殘段點都沒有進擦除圓內
+    // 斷口端點距圓心 ≈ 有效半徑；所有殘段點都沒有進擦除圓內
     expect(
         (Offset(rest.first.points.last.x, rest.first.points.last.y) -
                 const Offset(50, 0))
             .distance,
-        closeTo(20.0, 1.0));
+        closeTo(22.0, 1.0));
     expect(
         (Offset(rest.last.points.first.x, rest.last.points.first.y) -
                 const Offset(50, 0))
             .distance,
-        closeTo(20.0, 1.0));
+        closeTo(22.0, 1.0));
     for (final frag in rest) {
       for (final p in frag.points) {
         expect(
             (Offset(p.x, p.y) - const Offset(50, 0)).distance,
-            greaterThanOrEqualTo(19.5));
+            greaterThanOrEqualTo(21.5));
       }
     }
   });
@@ -629,14 +655,6 @@ void main() {
     }
     expect(
         resamplePoints([const Offset(5, 5)], 4).length, 1);
-  });
-
-  test('flickDir：快而直的縱掃才翻頁', () {
-    expect(flickDir(const Offset(0, -300), 0.2), 1);
-    expect(flickDir(const Offset(0, 300), 0.2), -1);
-    expect(flickDir(const Offset(0, -100), 0.2), 0); // 太慢
-    expect(flickDir(const Offset(0, -300), 0.8), 0); // 太久
-    expect(flickDir(const Offset(-300, -100), 0.2), 0); // 太橫
   });
 
   test('橡皮命中檢測：筆畫級距離判定', () {

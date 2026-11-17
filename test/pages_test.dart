@@ -635,9 +635,13 @@ void main() {
     await tester.dragFrom(moveFrom, Offset(0, 800 * ink.scale));
     await tester.pump();
 
-    // 點空白取消選取 → 此時才結算
+    // 點空白取消選取 → 此時才結算；原頁與各落點頁都要重建——
+    // 目標頁快取從未含過跨頁段，只重建原頁的話跨頁部分直接隱形
+    final st = tester.state<InkCanvasState>(find.byType(InkCanvas));
+    st.debugInvalidatedPages.clear();
     await tester.tapAt(screen(const Offset(680, 200)));
     await tester.pump();
+    expect(st.debugInvalidatedPages, containsAll(const [0, 1]));
 
     // 落到下面那頁的歸下面那頁，縫中間丟掉（A 字案例：腳跟埋尖保留）
     final on0 = loaded.strokes.where((s) => s.page == 0).toList();
@@ -658,6 +662,41 @@ void main() {
         expect(p.x, closeTo(130.0, 0.01));
       }
     }
+  });
+
+  testWidgets('雙指快掃已移除：快速縱掃不再翻頁（雙指平移仍在）', (tester) async {
+    final store = MemoryNoteStore();
+    final note = _a4note();
+    note.extraPages = 1; // 兩頁：掃錯也不會開新頁，頁碼好斷言
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/2 頁'), findsOneWidget);
+    final ink = tester.widget<InkCanvas>(find.byType(InkCanvas));
+    final topLeft = tester.getTopLeft(find.byType(InkCanvas));
+    Offset screen(Offset stacked) =>
+        topLeft + ink.panOffset + stacked * ink.scale;
+
+    // 雙指快速向上縱掃：修前 flickDir 門檻必中（0.5s 內 160px 縱向主導）
+    // → 翻到下一頁；移除快掃後只剩雙指平移，頁碼不動
+    final g1 = await tester.startGesture(screen(const Offset(300, 420)));
+    final g2 = await tester.startGesture(screen(const Offset(380, 420)));
+    await tester.pump(const Duration(milliseconds: 30));
+    for (var i = 0; i < 2; i++) {
+      await g1.moveBy(const Offset(0, -80));
+      await g2.moveBy(const Offset(0, -80));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    await g1.up();
+    await tester.pump();
+    await g2.up();
+    await tester.pump();
+    expect(find.text('第 1/2 頁'), findsOneWidget);
   });
 
   testWidgets('末頁往下畫：仍鉗制在既有末頁，不自動新增頁', (tester) async {

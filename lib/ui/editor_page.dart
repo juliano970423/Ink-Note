@@ -549,12 +549,6 @@ class _EditorPageState extends State<EditorPage> {
     _fillMissingBg();
   }
 
-  /// 雙指縱向快掃翻頁（有紙/底圖筆記；慢速雙指仍是平移）。
-  void _onPageFlick(int dir) {
-    if (_note.pageId == null && _note.backgrounds.isEmpty) return;
-    _goPage(_pageIndex + dir);
-  }
-
   // ---------- PDF 頁面管理 ----------
   // backgrounds 下標 = 顯示頁；PageBg.src = 原 PDF 頁碼（null = 空白頁）。
   // 排序/增刪只改列表 + 筆跡頁號重映射，底圖文件按 key 不動，匯出按顯示順序寫。
@@ -991,9 +985,9 @@ class _EditorPageState extends State<EditorPage> {
         .clamp(0, _pageRects.length - 1);
     if (p != _pageIndex) {
       _pageIndex = p;
-      final clipped = _clipDeselected();
+      final pages = _clipDeselected();
       _clearSelection();
-      return clipped;
+      return pages.isNotEmpty;
     }
     return false;
   }
@@ -1530,7 +1524,7 @@ class _EditorPageState extends State<EditorPage> {
     // 選筆用頁內座標算（虛線框直接按包圍盒畫，不存套索路徑）；
     // 只圈使用中圖層。舊選區先結算（出紙裁掉）再換新。
     // 同圈圖片一起選中（可與筆跡共存，移動/旋轉/複製/刪除一起走）。
-    var clipped = false;
+    var clipped = const <int>{};
     late List<Stroke> hits;
     late Set<String> imgHits;
     // 圈選是新選取，清掉畫布上殘留的 tap 單圖手柄；統一框改吃 selectionBounds。
@@ -1569,8 +1563,13 @@ class _EditorPageState extends State<EditorPage> {
         _lassoSelection = true;
       }
     });
-    if (clipped) {
-      _canvasKey.currentState?.invalidatePage(page);
+    if (clipped.isNotEmpty) {
+      final st = _canvasKey.currentState;
+      if (st != null) {
+        for (final p in {page, ...clipped}) {
+          st.invalidatePage(p);
+        }
+      }
       _scheduleAutosave();
     }
   }
@@ -1699,14 +1698,15 @@ class _EditorPageState extends State<EditorPage> {
   /// 取消選取結算：有紙/底圖時把選中筆跡「依頁切開」——移出頁界的部分
   /// 換頁號落到新頁（與書寫同一規則 splitStrokeAcrossPages），兩頁縫裡
   /// 與紙張外的段丟棄。之前用 clipStrokeToRect 只裁原頁，跨頁移動的部分
-  /// 會直接消失。返回是否有實質變化（調用者在 setState 外補 invalidate＋
-  /// 存檔，或已在 setState 內時由 _deselect 代勞）。
+  /// 會直接消失。返回本次動到的頁集合（原頁＋各落點頁）——調用方要「逐頁」
+  /// invalidate：目標頁快取從未含過這些跨頁段，只重建原頁的話它們直接隱形。
   /// 與拖移同一個 undo 作用域（這些路徑中間都無 checkpoint）。
-  bool _clipDeselected() {
-    if (_selected.isEmpty) return false;
+  Set<int> _clipDeselected() {
+    if (_selected.isEmpty) return const {};
     final rect = _clipRectForPage(_selectionPage);
-    if (rect == null) return false; // 無限畫布不裁紙
+    if (rect == null) return const {}; // 無限畫布不裁紙
     var clippedAny = false;
+    final touched = <int>{};
     final kept = <Stroke>{};
     final next = <Stroke>[];
     for (final s in _note.strokes) {
@@ -1714,30 +1714,42 @@ class _EditorPageState extends State<EditorPage> {
         next.add(s);
         continue;
       }
+      touched.add(s.page);
       final split = splitStrokeAcrossPages(s, _pageRects);
       final changed = split.isEmpty ||
           split.length != 1 ||
           split.first.page != s.page ||
           split.first.points.length != s.points.length;
-      if (changed) clippedAny = true;
+      if (changed) {
+        clippedAny = true;
+        for (final piece in split) {
+          touched.add(piece.page);
+        }
+      }
       next.addAll(split);
       kept.addAll(split);
     }
     if (clippedAny) {
       _note.strokes = next;
       _selected = kept;
+      return touched;
     }
-    return clippedAny;
+    return const {};
   }
 
   /// 用戶意義上的「取消選取」：先結算裁紙再清空。
-  /// 可直接放進 setState（有裁掉時自動 invalidate＋存檔）。
+  /// 可直接放進 setState（有裁掉時自動逐頁 invalidate＋存檔）。
   void _deselect() {
     _moveArmed = false;
-    final clipped = _clipDeselected();
+    final pages = _clipDeselected();
     _clearSelection();
-    if (clipped) {
-      _canvasKey.currentState?.invalidatePage(_selectionPage);
+    if (pages.isNotEmpty) {
+      final st = _canvasKey.currentState;
+      if (st != null) {
+        for (final p in pages) {
+          st.invalidatePage(p);
+        }
+      }
       _scheduleAutosave();
     }
   }
@@ -2442,7 +2454,6 @@ class _EditorPageState extends State<EditorPage> {
                   onSelectionRotate: _onSelectionRotate,
                   onSelectionScale: _onSelectionScale,
                   onDeselect: () => setState(_deselect),
-                  onPageFlick: _onPageFlick,
                   onTwoFingerDoubleTap: _undo,
                   onTwoFingerTripleTap: _redo,
                   selectionBounds: bounds,
