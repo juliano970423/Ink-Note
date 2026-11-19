@@ -703,6 +703,9 @@ class _EditorPageState extends State<EditorPage> {
   // _blankExtra；排序/插入/刪除都只搬筆跡頁號，再重算末尾空頁額度。
 
   /// 重算末尾空頁額度，讓總頁數維持 [count]。
+  /// 底圖頁本身占頁：額度只補「內容 ∪ 底圖」之外的頁——少算底圖會把
+  /// PDF 頁當成空頁額度（擦光筆跡 → _blankExtra 膨脹到底圖頁數，
+  /// 保存時 _materializeExtraPages 再物化成真頁 → 頁數翻倍）。
   void _syncBlankExtra(int count) {
     var top = -1;
     for (final s in _note.strokes) {
@@ -711,7 +714,11 @@ class _EditorPageState extends State<EditorPage> {
     for (final m in _note.images) {
       if (m.page > top) top = m.page;
     }
-    _blankExtra = max(0, count - (top + 1));
+    final content = top + 1;
+    final base = _note.backgrounds.isNotEmpty
+        ? max(content, _note.backgrounds.length)
+        : content;
+    _blankExtra = max(0, count - base);
   }
 
   void _movePaperPage(int from, int to) {

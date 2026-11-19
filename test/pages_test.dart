@@ -554,6 +554,59 @@ void main() {
     expect(find.text('第 2/2 頁'), findsOneWidget);
   });
 
+  testWidgets('PDF 筆記擦掉筆跡：頁數不翻倍（空頁額度不吃底圖頁）', (tester) async {
+    // 3 頁 PDF、筆跡只在第 1 頁。擦光後總頁數由底圖撐住，
+    // 空頁額度必須是 0——修前 _syncBlankExtra 少算底圖頁，
+    // 把 3 個底圖頁記成額度，autosave 物化成真頁 → 3 頁翻成 6 頁。
+    final store = MemoryNoteStore();
+    final note = Note(
+      id: 'a1b2',
+      title: 't',
+      createdAt: DateTime.utc(2026, 10, 5),
+      updatedAt: DateTime.utc(2026, 10, 5),
+      backgrounds: const [
+        PageBg(w: 800, h: 1131, src: 0),
+        PageBg(w: 800, h: 1131, src: 1),
+        PageBg(w: 800, h: 1131, src: 2),
+      ],
+    );
+    await store.save(note);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+          body: EditorPage(
+              repo: store, settings: AppSettings(), note: loaded)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/3 頁'), findsOneWidget);
+
+    // 落一筆（pen 預設工具，與 A4 像素橡皮範本同座標模式）
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    expect(loaded.strokes.length, 1);
+
+    // 像素橡皮：主鈕點兩次循環過去，同點抹掉
+    await tester.tap(find.byType(StrokeEraserIcon));
+    await tester.pump();
+    await tester.tap(find.byType(StrokeEraserIcon));
+    await tester.pump();
+    expect(find.byType(PixelEraserIcon), findsOneWidget);
+    await tester.tapAt(const Offset(400, 400));
+    await tester.pump();
+    expect(loaded.strokes, isEmpty);
+    // 擦光後頁數仍由 3 張底圖撐住
+    expect(find.text('第 1/3 頁'), findsOneWidget);
+
+    // autosave（2s）跑 _materializeExtraPages：額度為 0 不物化新頁；
+    // 修前額度=3 → 底圖 3→6 頁且落盤
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump();
+    final reloaded = await store.load('a1b2');
+    expect(reloaded.backgrounds.length, 3,
+        reason: '擦除不該把底圖頁記成空頁額度再物化成新頁');
+    expect(reloaded.extraPages, 0);
+  });
+
   testWidgets('空白頁上作畫 → undo：空頁額度隨 undo 回來，頁數不縮', (tester) async {
     final store = MemoryNoteStore();
     final note = _a4note()..extraPages = 2;
