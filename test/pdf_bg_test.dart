@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ink_notes/export/note_pdf.dart';
@@ -96,6 +97,77 @@ void main() {
     expect(tester.takeException(), isNull);
     // 畫面照常（分頁條/筆跡不受 fill 失敗影響）
     expect(find.text('第 1/1 頁'), findsOneWidget);
+  });
+
+  testWidgets('PDF 頁碼跟手：滾輪平移後底部指示更新（頁碼凍結回歸）',
+      (tester) async {
+    final store = MemoryNoteStore();
+    final note = Note(
+      id: 'p0g3',
+      title: 'pdf3',
+      createdAt: DateTime.utc(2026, 10, 5),
+      updatedAt: DateTime.utc(2026, 10, 5),
+      folder: '',
+      backgrounds: const [
+        PageBg(w: 800, h: 1131, key: 'k0', src: 0),
+        PageBg(w: 800, h: 1131, key: 'k1', src: 1),
+        PageBg(w: 800, h: 1131, key: 'k2', src: 2),
+      ],
+    );
+    await store.save(note);
+    final loaded = await store.load('p0g3');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: EditorPage(repo: store, settings: AppSettings(), note: loaded),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('第 1/3 頁'), findsOneWidget);
+
+    // 滾輪平移（Listener.onPointerSignal → onPanUpdate）：視口中心推過第 0 頁
+    // 底（1155+24），落到第 1 頁 → 指示要跟著變。修前 PDF note 的
+    // _syncFocusPage 被 pageId == null 擋掉，滾多遠都停在「第 1/3 頁」。
+    await tester.sendEventToBinding(PointerScrollEvent(
+      position: const Offset(400, 300),
+      scrollDelta: const Offset(0, 1000),
+    ));
+    await tester.pump();
+    expect(find.text('第 2/3 頁'), findsOneWidget);
+    // 再滾一頁 → 第 3 頁
+    await tester.sendEventToBinding(PointerScrollEvent(
+      position: const Offset(400, 300),
+      scrollDelta: const Offset(0, 1200),
+    ));
+    await tester.pump();
+    expect(find.text('第 3/3 頁'), findsOneWidget);
+  });
+
+  testWidgets('頁面管理副標題：舊版無 src 走 _bgSrc 兜底（不誤顯示空白頁）',
+      (tester) async {
+    final store = MemoryNoteStore();
+    // 舊版相容：有 key 無 src——渲染端 _bgSrc 按 key 解析原頁碼，
+    // 面板副標題以前只認 bg.src → 這種頁顯示成「空白頁」。
+    final note = Note(
+      id: 'lg1cy',
+      title: 'legacy',
+      createdAt: DateTime.utc(2026, 10, 5),
+      updatedAt: DateTime.utc(2026, 10, 5),
+      folder: '',
+      backgrounds: const [PageBg(w: 100, h: 140, key: 'p0')],
+    );
+    await store.save(note);
+    final loaded = await store.load('lg1cy');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: EditorPage(repo: store, settings: AppSettings(), note: loaded),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 1/1 頁'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('PDF 第 1 頁'), findsOneWidget);
+    // 副標題的空白頁格式是「空白頁 · N 筆」（按鈕「在末尾加空白頁」不算）
+    expect(find.textContaining('空白頁 ·'), findsNothing);
   });
 
   test('bg keyless stays empty + overflow pages backfilled', () {

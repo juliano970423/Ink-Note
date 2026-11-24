@@ -865,9 +865,9 @@ class _EditorPageState extends State<EditorPage> {
                             '第 ${i + 1} 頁${i == _pageIndex ? '（當前）' : ''}'),
                         subtitle: Text(bg == null
                             ? (count == 0 ? '空白頁' : '$count 筆')
-                            : bg.src == null
+                            : _bgSrc(i) == null
                                 ? '空白頁 · $count 筆'
-                                : 'PDF 第 ${bg.src! + 1} 頁 · $count 筆'),
+                                : 'PDF 第 ${_bgSrc(i)! + 1} 頁 · $count 筆'),
                         onTap: () {
                           Navigator.pop(ctx);
                           _goPage(i);
@@ -998,7 +998,11 @@ class _EditorPageState extends State<EditorPage> {
   /// 焦點頁跟著視口中心走（縮圖/分頁指示/落筆頁都以它為準）。
   /// 返回跳頁時是否順手裁掉了舊選區（調用方補 invalidate＋存檔）。
   bool _syncFocusPage() {
-    if (_note.pageId == null || _viewportSize.isEmpty) return false;
+    // 紙筆記（有 pageId）與 PDF 底圖筆記（pageId 恆 null 但有頁）都要跟手；
+    // 只有無限畫布（兩者皆無）才沒有焦點頁可同步。
+    if ((_note.pageId == null && !_hasPdfPages) || _viewportSize.isEmpty) {
+      return false;
+    }
     final center = Offset(
       (_viewportSize.width / 2 - _panOffset.dx) / _scale,
       (_viewportSize.height / 2 - _panOffset.dy) / _scale,

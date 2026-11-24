@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -146,9 +146,13 @@ class NoteRepository implements NoteStore {
         final rest = f.uri.pathSegments.last.substring(oldBase.length);
         try {
           await f.rename(p.join(target.parent.path, '$newBase$rest'));
-        } catch (_) {}
+        } catch (err) {
+          debugPrint('note_repository: move sidecar ${f.path} failed: $err');
+        }
       }
-    } catch (_) {}
+    } catch (err) {
+      debugPrint('note_repository: sidecar sweep for ${existing.path} failed: $err');
+    }
   }
 
   /// 過渡補丁索引（檔名 → 文件）：找回舊版 save 只搬 json 遺留的 sidecar 孤兒。
@@ -170,20 +174,26 @@ class NoteRepository implements NoteStore {
 
   /// 過渡補丁：[target]（按當前 json 路徑推導）缺檔時，按 id 找回舊 base 下
   /// 的同名 sidecar 並 rename 到 [target]（一次性遷移，之後走正常快路徑）。
-  /// [suffix] 形如 `_bgk0.png` / `_orig.pdf` / `_imgab12.png`；id 是唯一 hex
-  /// 且在檔名中以 `_{id}_` 出現，不會誤認別篇的文件。找不到返回 null。
+  /// [suffix] 形如 `_bgk0.png` / `_orig.pdf` / `_imgab12.png`（id 後緊接 `_`）
+  /// 或 `.png`（縮圖，id 在檔名結尾——此型別排除夾著 `_{id}_` 的檔，防誤認
+  /// `_img{id}.png`）。id 是唯一 hex，endsWith 帶 id 不會誤認別篇的文件。
+  /// 找不到返回 null。
   Future<File?> _adoptOrphan(String id, String suffix, File target) async {
     final index = _orphanIndex ??= await _scanOrphanIndex();
-    final marker = '_${id}_';
+    final full = '_$id$suffix';
+    final tailStyle = suffix == '.png'; // 縮圖：id 在結尾
     for (final e in index.entries.toList()) {
       final name = e.key;
-      if (!name.contains(marker) || !name.endsWith(suffix)) continue;
+      if (!name.endsWith(full)) continue;
+      if (tailStyle && name.contains('_${id}_')) continue;
       if (e.value.path == target.path) return e.value;
       try {
         await e.value.rename(target.path);
         index.remove(name);
+        debugPrint('note_repository: adopt orphan $name -> ${target.path}');
         return target;
-      } catch (_) {
+      } catch (err) {
+        debugPrint('note_repository: adopt orphan $name failed: $err');
         return e.value; // 搬不動（被占用等）：先用原位置，至少能顯示
       }
     }
@@ -330,6 +340,11 @@ class NoteRepository implements NoteStore {
     try {
       final thumb = await thumbnailFileForId(id);
       if (await thumb.exists()) return await thumb.readAsBytes();
+      // 過渡補丁：孤兒縮圖找回來用（見 _adoptOrphan）
+      final adopted = await _adoptOrphan(id, '.png', thumb);
+      if (adopted != null && await adopted.exists()) {
+        return await adopted.readAsBytes();
+      }
     } catch (_) {}
     return null;
   }
@@ -446,26 +461,30 @@ class NoteRepository implements NoteStore {
   @override
   Future<void> delete(String id) async {
     final f = await findNoteFile(id);
-    if (f != null) {
-      await f.delete();
-      final thumb = File(f.path.replaceAll(RegExp(r'\.json$'), '.png'));
-      if (await thumb.exists()) await thumb.delete();
-      final orig = File(f.path.replaceAll(RegExp(r'\.json$'), '_orig.pdf'));
-      if (await orig.exists()) await orig.delete();
-      // 底圖按 key 存檔（`_bg*.png` 全刪；刪頁留下的孤兒文件在這裡一起清）
-      // 貼圖同理（`_img*.png` 全刪）
-      final dir = f.parent;
-      final base = f.uri.pathSegments.last.replaceAll(RegExp(r'\.json$'), '');
-      await for (final e in dir.list()) {
+    if (f == null) return;
+    await f.delete();
+    // sidecar 全按 id 標記清（不只當前 base）：舊版改名遺留的孤兒
+    //（`_{id}_*` 底圖/原檔/貼圖、`_{id}.png` 縮圖）跟著一起銷毀，
+    // 否則刪了筆記檔案還永遠殘留。id 唯一 hex，不會誤刪別篇。
+    final marker = '_${id}_';
+    final thumbSuffix = '_$id.png';
+    try {
+      await for (final e in notesDir.list(recursive: true)) {
+        if (e is! File || e.path == f.path) continue;
         final name = e.uri.pathSegments.last;
-        if (name.endsWith('.png') &&
-            (name.startsWith('${base}_bg') ||
-                name.startsWith('${base}_img'))) {
+        if (name.endsWith('.json') || name.endsWith('.tmp')) continue;
+        if ((name.contains(marker) &&
+                (name.endsWith('.png') || name.endsWith('.pdf'))) ||
+            name.endsWith(thumbSuffix)) {
           try {
             await e.delete();
-          } catch (_) {}
+          } catch (err) {
+            debugPrint('note_repository: delete sidecar $name failed: $err');
+          }
         }
       }
+    } catch (err) {
+      debugPrint('note_repository: sidecar sweep for $id failed: $err');
     }
   }
 }

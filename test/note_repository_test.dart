@@ -233,4 +233,43 @@ void main() {
     // 第二次走快路徑（檔已在當前 base）
     expect(await repo.loadBackground('c2ffee', 'k0'), [1, 2, 3]);
   });
+
+  test('孤兒縮圖自癒：改名遺留的縮圖打開時找回並搬回當前 base', () async {
+    await repo.save(_note('d4e5f6', '縮圖'));
+    await repo.saveThumbnail('d4e5f6', [7, 7]);
+    final json = (await repo.findNoteFile('d4e5f6'))!;
+    final oldBase = json.path.replaceAll(RegExp(r'\.json$'), '');
+    final newJson = await json
+        .rename('${json.parent.path}/2026-01-01_縮圖_d4e5f6.json');
+    final newBase = newJson.path.replaceAll(RegExp(r'\.json$'), '');
+    expect(await File('$oldBase.png').exists(), isTrue, reason: '孤兒縮圖');
+
+    expect(await repo.loadThumbnail('d4e5f6'), [7, 7]);
+    expect(await File('$newBase.png').exists(), isTrue);
+    expect(await File('$oldBase.png').exists(), isFalse);
+  });
+
+  test('delete 連孤兒 sidecar 一起清（舊 base 殘留不留垃圾）', () async {
+    await repo.save(_note('f00d12', '刪除'));
+    await repo.saveBackground('f00d12', 'k0', [1]);
+    await repo.saveOriginalPdf('f00d12', [2]);
+    await repo.saveImage('f00d12', 'ab12', [3]);
+    await repo.saveThumbnail('f00d12', [4]);
+    final json = (await repo.findNoteFile('f00d12'))!;
+    final oldBase = json.path.replaceAll(RegExp(r'\.json$'), '');
+    // 模擬舊版 bug：json 改名搬走，全部 sidecar 留在舊 base 成孤兒
+    await json.rename('${json.parent.path}/2026-01-01_刪除_f00d12.json');
+    expect(File('${oldBase}_bgk0.png').existsSync(), isTrue,
+        reason: '孤兒底圖留在舊 base（前提）');
+    expect(File('${oldBase}_orig.pdf').existsSync(), isTrue);
+    expect(File('$oldBase.png').existsSync(), isTrue);
+
+    await repo.delete('f00d12');
+    final leftovers = await Directory('${tmp.path}/notes')
+        .list(recursive: true)
+        .where((e) => e is File && e.path.contains('f00d12'))
+        .toList();
+    expect(leftovers, isEmpty, reason: 'json 與全部 sidecar 都銷毀');
+    expect(await repo.listAll(), isEmpty);
+  });
 }
