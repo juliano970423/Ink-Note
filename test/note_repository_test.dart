@@ -153,4 +153,84 @@ void main() {
     expect(all.length, 1);
     expect(all.first.title, '新標題');
   });
+
+  // sidecar（底圖/原檔/貼圖/縮圖）全按 json 路徑推導：save 路徑變化時
+  // 不跟著搬就全部失聯 = PDF 底圖永久不顯示的根因。
+  const sidecarSuffixes = ['_bgk0.png', '_orig.pdf', '_imgab12.png', '.png'];
+
+  test('改標題保存：sidecar 跟著搬到新 base（檔案系統斷言）', () async {
+    await repo.save(_note('f0e1d2', '舊標題'));
+    final oldJson = (await repo.findNoteFile('f0e1d2'))!;
+    final oldBase = oldJson.path.replaceAll(RegExp(r'\.json$'), '');
+    await repo.saveBackground('f0e1d2', 'k0', [1, 2, 3]);
+    await repo.saveOriginalPdf('f0e1d2', [9, 9, 9]);
+    await repo.saveImage('f0e1d2', 'ab12', [4, 5]);
+    await repo.saveThumbnail('f0e1d2', [7]);
+
+    await repo.save(_note('f0e1d2', '新標題'));
+    final newJson = (await repo.findNoteFile('f0e1d2'))!;
+    expect(newJson.path, isNot(oldJson.path));
+    final newBase = newJson.path.replaceAll(RegExp(r'\.json$'), '');
+    // 直接查檔案系統（走 load 會被孤兒自癒掩蓋，測不到搬移本身）
+    for (final s in sidecarSuffixes) {
+      expect(await File('$newBase$s').exists(), isTrue, reason: '新 base$s');
+      expect(await File('$oldBase$s').exists(), isFalse, reason: '舊 base$s');
+    }
+    // load 也讀得到
+    expect(await repo.loadBackground('f0e1d2', 'k0'), [1, 2, 3]);
+    expect(await repo.loadOriginalPdf('f0e1d2'), [9, 9, 9]);
+    expect(await repo.loadImage('f0e1d2', 'ab12'), [4, 5]);
+    expect(await repo.loadThumbnail('f0e1d2'), [7]);
+  });
+
+  test('搬資料夾：sidecar 跟著搬進子目錄', () async {
+    await repo.save(_note('b10001', '筆記'));
+    final oldJson = (await repo.findNoteFile('b10001'))!;
+    final oldBase = oldJson.path.replaceAll(RegExp(r'\.json$'), '');
+    await repo.saveBackground('b10001', 'k0', [1, 2, 3]);
+    await repo.saveOriginalPdf('b10001', [9]);
+    await repo.saveImage('b10001', 'ab12', [4]);
+    await repo.saveThumbnail('b10001', [7]);
+
+    await repo.save(_note('b10001', '筆記')..folder = '工作');
+    final newJson = (await repo.findNoteFile('b10001'))!;
+    expect(newJson.path, contains('工作'));
+    final newBase = newJson.path.replaceAll(RegExp(r'\.json$'), '');
+    for (final s in sidecarSuffixes) {
+      expect(await File('$newBase$s').exists(), isTrue, reason: '新 base$s');
+      expect(await File('$oldBase$s').exists(), isFalse, reason: '舊 base$s');
+    }
+    expect(await repo.loadBackground('b10001', 'k0'), [1, 2, 3]);
+    expect(await repo.loadOriginalPdf('b10001'), [9]);
+    expect(await repo.loadImage('b10001', 'ab12'), [4]);
+    expect(await repo.loadThumbnail('b10001'), [7]);
+  });
+
+  test('孤兒 sidecar 自癒：舊版只搬 json 遺留的檔，打開時掃描找回並搬回',
+      () async {
+    await repo.save(_note('c2ffee', '孤兒'));
+    await repo.saveBackground('c2ffee', 'k0', [1, 2, 3]);
+    await repo.saveOriginalPdf('c2ffee', [9]);
+    await repo.saveImage('c2ffee', 'ab12', [4]);
+    final json = (await repo.findNoteFile('c2ffee'))!;
+    final oldBase = json.path.replaceAll(RegExp(r'\.json$'), '');
+    // 模擬舊版 save 的行為：json 改名，sidecar 全留原地
+    final newJson = await json
+        .rename('${json.parent.path}/2026-01-01_孤兒_c2ffee.json');
+    final newBase = newJson.path.replaceAll(RegExp(r'\.json$'), '');
+    for (final s in ['_bgk0.png', '_orig.pdf', '_imgab12.png']) {
+      expect(await File('$oldBase$s').exists(), isTrue, reason: '孤兒$s');
+    }
+
+    // 打開即自癒：讀到內容，且 sidecar 搬回當前 base
+    expect(await repo.loadBackground('c2ffee', 'k0'), [1, 2, 3]);
+    expect(await repo.loadOriginalPdf('c2ffee'), [9]);
+    expect(await repo.loadImage('c2ffee', 'ab12'), [4]);
+    for (final s in ['_bgk0.png', '_orig.pdf', '_imgab12.png']) {
+      expect(await File('$newBase$s').exists(), isTrue, reason: '搬回$s');
+      expect(await File('$oldBase$s').exists(), isFalse, reason: '孤兒消失$s');
+    }
+    // 第二次走快路徑（檔已在當前 base）
+    expect(await repo.loadBackground('c2ffee', 'k0'), [1, 2, 3]);
+  });
 }

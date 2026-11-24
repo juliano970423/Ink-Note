@@ -162,6 +162,8 @@ class InkCanvasState extends State<InkCanvas> {
   bool _buildRunning = false;
   bool _buildScheduled = false;
   bool _buildAgain = false;
+  /// 連續重建失敗計數：成功歸零；達上限 3 次不再掛 dirty 重試（防無限循環）。
+  int _buildFailures = 0;
   // 底圖層（筆跡層之下；分層渲染，互不擋）
   ui.Picture? _bgPicture;
   Duration _lastOutlineAt = Duration.zero;
@@ -626,6 +628,26 @@ class InkCanvasState extends State<InkCanvas> {
         _clearSelectionPreview();
       } else if (_previewClearAfterBuild && preview == null) {
         _previewClearAfterBuild = false;
+      }
+      // 連續失敗計數：這次成功，歸零
+      _buildFailures = 0;
+    } catch (e) {
+      // 重建例外：dirty 標記已在開頭清掉，不掛回去 = 一次暫時性錯誤
+      // 就永久白屏。掛回重試；連續失敗 3 次放棄（防無限重建循環）。
+      debugPrint('ink_canvas: rebuild failed (attempt ${_buildFailures + 1}): $e');
+      if (_buildFailures < 3) {
+        _buildFailures++;
+        if (all) {
+          _allPagesDirty = true;
+        } else {
+          _dirtyPages.addAll(pages.where(_validPage));
+        }
+        if (bgDirty) _bgDirty = true;
+      }
+      // 未掛上畫布的圖先 dispose（已掛上的不能動，否則畫到已釋放的圖）
+      if (bgPic != null && !identical(_bgPicture, bgPic)) bgPic.dispose();
+      for (final e in built.entries) {
+        if (!identical(_pagePics[e.key], e.value)) e.value.dispose();
       }
     } finally {
       _buildRunning = false;

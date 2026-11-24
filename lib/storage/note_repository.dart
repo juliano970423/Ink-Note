@@ -99,7 +99,10 @@ class NoteRepository implements NoteStore {
           File(p.join(hdir.path, 'v${next}_$stamp.json.gz'));
       await histFile.writeAsBytes(gzip.encode(oldBytes));
       // 若改名/搬家：歷史目錄保持舊 key（可追溯），刪除舊文件；新文件用新路徑。
+      // sidecar（底圖/原檔/貼圖/縮圖）全按 json 路徑推導——不跟著搬就全部
+      // 失聯（PDF 底圖永久不顯示的根因：跨日/改標題/搬資料夾都會改路徑）。
       if (existing.path != target.path) {
+        await _moveSidecars(existing, target);
         await existing.delete();
         final oldThumb = File(existing.path.replaceAll(
             RegExp(r'\.json$'), '.png'));
@@ -118,6 +121,77 @@ class NoteRepository implements NoteStore {
     // TODO(保留策略): history/ 目前不設上限（筆記體量小），未來加按數量/時間清理。
     // TODO(同步合併): 未來同步時雙端同改同一篇，利用 history/ 快照按筆畫時間戳合併。
   }
+
+  /// 路徑變化（改標題/跨日/搬資料夾）時把 sidecar 搬到新 base：
+  /// `{舊base}_bg*.png`、`_orig.pdf`、`_img*.png` 與縮圖 `{舊base}.png`。
+  /// 先收集再搬（不邊遍歷邊改目錄）；單檔失敗留原地不阻擋 json 保存。
+  Future<void> _moveSidecars(File existing, File target) async {
+    final oldBase =
+        p.basename(existing.path.replaceAll(RegExp(r'\.json$'), ''));
+    final newBase = p.basename(target.path.replaceAll(RegExp(r'\.json$'), ''));
+    try {
+      final dir = existing.parent;
+      if (!await dir.exists()) return;
+      final hits = <File>[];
+      await for (final e in dir.list()) {
+        if (e is! File) continue;
+        final name = e.uri.pathSegments.last;
+        if (name == '$oldBase.png' ||
+            (name.startsWith('${oldBase}_') &&
+                (name.endsWith('.png') || name.endsWith('.pdf')))) {
+          hits.add(e);
+        }
+      }
+      for (final f in hits) {
+        final rest = f.uri.pathSegments.last.substring(oldBase.length);
+        try {
+          await f.rename(p.join(target.parent.path, '$newBase$rest'));
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  /// 過渡補丁索引（檔名 → 文件）：找回舊版 save 只搬 json 遺留的 sidecar 孤兒。
+  /// 全目錄只掃一次（其後的 miss 都是純記憶體查找）；新 save 已會搬 sidecar，
+  /// 全部既有筆記自癒過一遍（不再命中）後，可連同 [_adoptOrphan] 三個呼叫點移除。
+  Map<String, File>? _orphanIndex;
+
+  Future<Map<String, File>> _scanOrphanIndex() async {
+    final out = <String, File>{};
+    try {
+      if (await notesDir.exists()) {
+        await for (final e in notesDir.list(recursive: true)) {
+          if (e is File) out[e.uri.pathSegments.last] = e;
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 過渡補丁：[target]（按當前 json 路徑推導）缺檔時，按 id 找回舊 base 下
+  /// 的同名 sidecar 並 rename 到 [target]（一次性遷移，之後走正常快路徑）。
+  /// [suffix] 形如 `_bgk0.png` / `_orig.pdf` / `_imgab12.png`；id 是唯一 hex
+  /// 且在檔名中以 `_{id}_` 出現，不會誤認別篇的文件。找不到返回 null。
+  Future<File?> _adoptOrphan(String id, String suffix, File target) async {
+    final index = _orphanIndex ??= await _scanOrphanIndex();
+    final marker = '_${id}_';
+    for (final e in index.entries.toList()) {
+      final name = e.key;
+      if (!name.contains(marker) || !name.endsWith(suffix)) continue;
+      if (e.value.path == target.path) return e.value;
+      try {
+        await e.value.rename(target.path);
+        index.remove(name);
+        return target;
+      } catch (_) {
+        return e.value; // 搬不動（被占用等）：先用原位置，至少能顯示
+      }
+    }
+    return null;
+  }
+
+  static String _safeKey(String key) =>
+      key.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
 
   Future<int> _nextVersion(Directory hdir) async {
     var max = 0;
@@ -273,8 +347,8 @@ class NoteRepository implements NoteStore {
   Future<File> backgroundFileForId(String id, String key) async {
     final f = await findNoteFile(id);
     if (f == null) throw StateError('note not found: $id');
-    final safe = key.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
-    return File(f.path.replaceAll(RegExp(r'\.json$'), '_bg$safe.png'));
+    return File(
+        f.path.replaceAll(RegExp(r'\.json$'), '_bg${_safeKey(key)}.png'));
   }
 
   @override
@@ -282,6 +356,11 @@ class NoteRepository implements NoteStore {
     try {
       final bg = await backgroundFileForId(id, key);
       if (await bg.exists()) return await bg.readAsBytes();
+      // 過渡補丁：舊版 save 只搬 json 留下的孤兒底圖，找回來用（見 _adoptOrphan）
+      final adopted = await _adoptOrphan(id, '_bg${_safeKey(key)}.png', bg);
+      if (adopted != null && await adopted.exists()) {
+        return await adopted.readAsBytes();
+      }
     } catch (_) {}
     return null;
   }
@@ -307,6 +386,11 @@ class NoteRepository implements NoteStore {
     try {
       final f = await originalPdfFileForId(id);
       if (await f.exists()) return await f.readAsBytes();
+      // 過渡補丁：孤兒原檔找回來用（見 _adoptOrphan）
+      final adopted = await _adoptOrphan(id, '_orig.pdf', f);
+      if (adopted != null && await adopted.exists()) {
+        return await adopted.readAsBytes();
+      }
     } catch (_) {}
     return null;
   }
@@ -323,8 +407,8 @@ class NoteRepository implements NoteStore {
   Future<File> imageFileForId(String noteId, String imageId) async {
     final f = await findNoteFile(noteId);
     if (f == null) throw StateError('note not found: $noteId');
-    final safe = imageId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
-    return File(f.path.replaceAll(RegExp(r'\.json$'), '_img$safe.png'));
+    return File(
+        f.path.replaceAll(RegExp(r'\.json$'), '_img${_safeKey(imageId)}.png'));
   }
 
   @override
@@ -332,6 +416,12 @@ class NoteRepository implements NoteStore {
     try {
       final f = await imageFileForId(noteId, imageId);
       if (await f.exists()) return await f.readAsBytes();
+      // 過渡補丁：孤兒貼圖找回來用（見 _adoptOrphan）
+      final adopted =
+          await _adoptOrphan(noteId, '_img${_safeKey(imageId)}.png', f);
+      if (adopted != null && await adopted.exists()) {
+        return await adopted.readAsBytes();
+      }
     } catch (_) {}
     return null;
   }

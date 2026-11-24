@@ -78,6 +78,26 @@ void main() {
     expect(find.text('第 1/1 頁'), findsOneWidget);
   });
 
+  testWidgets('fill 面對垃圾原檔：不抛未捕獲例外（open 失敗只跳過重渲染）',
+      (tester) async {
+    final store = MemoryNoteStore();
+    await store.save(_bgNote());
+    // 非 PDF 字節：PdfDocument.open 必炸。修前例外從 _fillMissingBg 傳出
+    // 到 postFrameCallback → 未捕獲 → 測試紅；修後設 origBad 標記後跳過。
+    await store.saveOriginalPdf('a1b2', [1, 2, 3]);
+    final loaded = await store.load('a1b2');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: EditorPage(repo: store, settings: AppSettings(), note: loaded),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.takeException(), isNull);
+    // 畫面照常（分頁條/筆跡不受 fill 失敗影響）
+    expect(find.text('第 1/1 頁'), findsOneWidget);
+  });
+
   test('bg keyless stays empty + overflow pages backfilled', () {
     final note = Note.fromJson({
       'id': 'a1b2',

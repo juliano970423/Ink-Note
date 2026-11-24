@@ -281,9 +281,11 @@ class _EditorPageState extends State<EditorPage> {
     return [...inView, ...rest];
   }
 
-  /// 後台填充缺失的底圖像素（懶載入導入的剩餘頁；2400 基線，可見優先）。
+  /// 后台填充缺失的底圖像素（懶載入導入的剩餘頁；2400 基線，可見優先）。
   /// 内存已有（升级的高清版）不降级；文件已有读文件；都没有才渲染。
-  /// 存盘持久化（下次打开直接读文件）。测试环境无原 PDF 自动早退。
+  /// 存盘持久化（下次打开直接读文件）。
+  /// 無原 PDF（測試環境/失聯）只跳過重渲染分支，仍照讀已存在的底圖檔；
+  /// 單頁渲染失敗只跳過該頁，原檔打不開設 origBad 標記後續頁不再徒勞。
   Future<void> _fillMissingBg() async {
     if (_fillingBg || !_hasPdfPages) return;
     _fillingBg = true;
@@ -293,59 +295,72 @@ class _EditorPageState extends State<EditorPage> {
         try {
           orig = await widget.repo.loadOriginalPdf(_note.id);
         } catch (_) {
-          return;
+          orig = null;
         }
         if (!mounted) return;
         _origPdfBytes = orig;
       }
-      if (orig == null) return;
       final note = _note;
       PdfDocument? doc;
-      try {
-        for (final i in _fillOrder()) {
-          if (!mounted || !identical(_note, note)) return;
-          if (i >= _note.backgrounds.length) break;
-          if (_bgImages.containsKey(i)) continue;
-          // 文件已有（别处填的/升级存的）读文件
-          Uint8List? png;
-          try {
-            png = await widget.repo.loadBackground(_note.id, _bgKey(i));
-          } catch (_) {}
-          if (png == null) {
-            final src = _bgSrc(i);
-            if (src == null) continue;
-            doc ??= PdfDocument.open(orig);
-            if (src < 0 || src >= doc.pageCount) continue;
-            final r = await renderPdfPageVector(doc, src, widthPx: 2400);
-            if (!mounted || !identical(_note, note)) return;
-            if (r == null) continue;
-            png = r.png;
-            try {
-              await widget.repo.saveBackground(_note.id, _bgKey(i), png);
-            } catch (_) {}
-          }
-          if (!mounted || !identical(_note, note)) return;
-          try {
-            final img = await decodePng(png);
-            if (!mounted || !identical(_note, note)) {
-              img?.dispose();
-              return;
+      var origBad = false;
+      for (final i in _fillOrder()) {
+        if (!mounted || !identical(_note, note)) return;
+        if (i >= _note.backgrounds.length) break;
+        if (_bgImages.containsKey(i)) continue;
+        // 文件已有（别处填的/升级存的）读文件
+        Uint8List? png;
+        try {
+          png = await widget.repo.loadBackground(_note.id, _bgKey(i));
+        } catch (_) {}
+        if (png == null && orig != null && !origBad) {
+          final src = _bgSrc(i);
+          if (src != null) {
+            if (doc == null) {
+              try {
+                doc = PdfDocument.open(orig);
+              } catch (_) {
+                // 原檔壞/打不開：標記後續頁不再嘗試重渲染
+                origBad = true;
+              }
             }
-            if (img == null) continue;
-            setState(() {
-              _bgImages[i]?.dispose();
-              _bgImages[i] = img;
-              _bgWidths[i] = img.width;
-            });
-            _canvasKey.currentState
-                ?.setBgImages(Map<int, ui.Image>.from(_bgImages));
-            _canvasKey.currentState?.invalidateCache();
-          } catch (_) {}
-          // 让帧：别把 UI 线程一口气占满
-          await Future<void>.delayed(const Duration(milliseconds: 16));
+            if (doc != null) {
+              // 逐頁 try/catch：單頁壞只跳過該頁，不中止整輪（其餘頁照填）
+              try {
+                if (src >= 0 && src < doc.pageCount) {
+                  final r = await renderPdfPageVector(doc, src, widthPx: 2400);
+                  if (!mounted || !identical(_note, note)) return;
+                  if (r != null) {
+                    png = r.png;
+                    try {
+                      await widget.repo
+                          .saveBackground(_note.id, _bgKey(i), png);
+                    } catch (_) {}
+                  }
+                }
+              } catch (_) {}
+            }
+          }
         }
-      } finally {
-        // PdfDocument 纯 Dart，GC 回收即可
+        if (png == null) continue;
+        if (!mounted || !identical(_note, note)) return;
+        try {
+          final img = await decodePng(png);
+          if (!mounted || !identical(_note, note)) {
+            img?.dispose();
+            return;
+          }
+          if (img == null) continue;
+          setState(() {
+            _bgImages[i]?.dispose();
+            _bgImages[i] = img;
+            _bgWidths[i] = img.width;
+          });
+          _canvasKey.currentState
+              ?.setBgImages(Map<int, ui.Image>.from(_bgImages));
+          _canvasKey.currentState?.invalidateCache();
+        } catch (_) {}
+        // 让帧：别把 UI 线程一口气占满
+        await Future<void>.delayed(const Duration(milliseconds: 16));
       }
     } finally {
       _fillingBg = false;
